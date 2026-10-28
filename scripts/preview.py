@@ -82,7 +82,7 @@ STYLE = """
 
 SCRIPT = r"""
 import { installPage } from '/src/page.js';
-import { normalizeConfig } from '/src/core.js';
+import { normalizeConfig, instanceCanStart } from '/src/core.js';
 
 // Every API below is a local simulation. Real scheduler/entry modules are never imported.
 const nativeFetch = window.fetch.bind(window);
@@ -96,12 +96,12 @@ window.fetch = async (input, init = {}) => {
 window.XMLHttpRequest = class { constructor() { throw new Error('离线演示禁止 XMLHttpRequest'); } };
 history.replaceState(null, '', '/console/instance/pro/list?offline-preview=1');
 const [panelMarkup, panelCss] = await Promise.all([
-  fetch('/src/panel.html?v=1.1.0', { cache: 'no-store' }).then(response => response.text()),
-  fetch('/src/panel.css?v=1.1.0', { cache: 'no-store' }).then(response => response.text()),
+  fetch('/src/panel.html?v=1.1.1', { cache: 'no-store' }).then(response => response.text()),
+  fetch('/src/panel.css?v=1.1.1', { cache: 'no-store' }).then(response => response.text()),
 ]);
 const expected = [
-  { uuid: 'pro-demo0001', name: 'Demo GPU A', status: '已关机' },
-  { uuid: 'pro-demo0002', name: 'Demo GPU B', status: '已关机' },
+  { uuid: 'pro-demo0001', name: 'Demo GPU A', status: '已关机', canPowerOn: null },
+  { uuid: 'pro-demo0002', name: 'Demo GPU B', status: '已关机', canPowerOn: null },
 ];
 let syncCount = 0;
 let lastPageSync = null;
@@ -141,6 +141,7 @@ const scheduler = {
   },
   async command(type, payload = {}) {
     advance();
+    if (state.readOnly && !['GET_STATE', 'OPEN_AUTODL'].includes(type)) return { ok: false, error: '另一个标签页正在管理任务' };
     if (type === 'START_JOB') {
       startCount += 1;
       let config;
@@ -148,6 +149,7 @@ const scheduler = {
       if (defaults.startAt && defaults.startAt <= Date.now()) defaults.startAt = null;
       try { config = normalizeConfig({ ...defaults, ...payload.config }); }
       catch (error) { return { ok: false, error: error.message }; }
+      if (!instanceCanStart(state.instances.find(item => item.uuid === config.uuid))) return { ok: false, error: '实例当前已开机或正在启动' };
       if (state.jobs.some(job => job.uuid === config.uuid && job.enabled)) return { ok: false, error: '该实例已有离线模拟任务，请先停止' };
       state.jobs = state.jobs.filter(job => job.uuid !== config.uuid);
       const scheduled = config.startAt > Date.now() + 20;
@@ -166,6 +168,7 @@ const scheduler = {
       if (job) Object.assign(job, { enabled: false, status: 'stopped', nextRunAt: null, updatedAt: Date.now(), lastMessage: '【离线模拟】任务已停止' });
       log('停止模拟任务', 'info', payload.uuid);
     } else if (type === 'DELETE_JOB') {
+      if (state.jobs.some(job => job.uuid === payload.uuid && job.enabled)) return { ok: false, error: '请先停止任务再删除' };
       state.jobs = state.jobs.filter(job => job.uuid !== payload.uuid);
     } else if (type === 'CLEAR_LOGS') {
       state.logs = [];
@@ -183,6 +186,7 @@ const scheduler = {
 let destroyPage = installPage(scheduler, panelMarkup, panelCss);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const rowButtons = () => [...document.querySelectorAll('[data-autodl-scheduler-button="userscript"]')];
+const rowDeletes = () => [...document.querySelectorAll('[data-autodl-scheduler-delete="userscript"]')];
 const shadowRoot = () => document.getElementById('autodl-scheduler-host')?.shadowRoot;
 document.getElementById('open-demo').addEventListener('click', () => shadowRoot()?.querySelector('.adls-launcher')?.click());
 
@@ -203,6 +207,8 @@ async function runChecks() {
   try {
     destroyPage();
     state.jobs = [];
+    state.readOnly = false;
+    for (const row of document.querySelectorAll('#fixture .el-table__row')) row.querySelector('.status').textContent = '已关机';
     state.preferences = { intervalSeconds: 60, maxAttempts: 0, startAt: null };
     startCount = 0;
     destroyPage = installPage(scheduler, panelMarkup, panelCss);
@@ -255,6 +261,64 @@ async function runChecks() {
     stopButton.click();
     await pause(80);
     check('原网页可直接停止任务并保留另一任务', state.jobs.some(job => job.uuid === expected[0].uuid && !job.enabled && job.status === 'stopped') && state.jobs.some(job => job.uuid === expected[1].uuid && job.enabled));
+    const firstRow = rowButtons()[0].closest('.el-table__row');
+    const nativeStatus = firstRow.querySelector('.status');
+    const refreshUi = async () => { window.dispatchEvent(new Event('pageshow')); await pause(120); };
+    const endedJob = status => ({ uuid: expected[0].uuid, name: expected[0].name, enabled: false, status, intervalSeconds: 60, maxAttempts: 0, attempts: 3, nextRunAt: null, updatedAt: Date.now(), lastMessage: '【离线模拟】历史任务记录' });
+    const setEndedJob = async status => { state.jobs = state.jobs.filter(job => job.uuid !== expected[0].uuid); state.jobs.push(endedJob(status)); await refreshUi(); };
+    await setEndedJob('success');
+    check('历史成功记录不锁定当前已关机的实例', rowButtons()[0].textContent.includes('抢机') && !rowButtons()[0].disabled);
+    const beforeRestart = startCount;
+    rowButtons()[0].click();
+    await pause(100);
+    check('成功开机后关机可原地重新抢机，无需先删除记录', startCount === beforeRestart + 1 && state.jobs.find(job => job.uuid === expected[0].uuid)?.enabled && state.jobs.find(job => job.uuid === expected[0].uuid)?.attempts === 1);
+    firstControls.querySelector('[data-autodl-scheduler-stop="userscript"]').click();
+    await pause(80);
+    await setEndedJob('success');
+    root.querySelector('.adls-launcher').click();
+    await pause(80);
+    const successCard = [...root.querySelectorAll('[data-task-uuid]')].find(item => item.dataset.taskUuid === expected[0].uuid);
+    const restartAction = [...(successCard?.querySelectorAll('button') || [])].find(item => item.textContent === '重新抢机');
+    check('成功任务面板同时提供重新抢机与删除入口', restartAction && [...successCard.querySelectorAll('button')].some(item => item.textContent.includes('删除')));
+    restartAction?.click();
+    await pause(80);
+    check('任务面板也能直接重新启动已关机的历史成功实例', state.jobs.find(job => job.uuid === expected[0].uuid)?.enabled && startCount === beforeRestart + 2);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    firstControls.querySelector('[data-autodl-scheduler-stop="userscript"]').click();
+    await pause(80);
+    for (const status of ['success', 'stopped', 'error', 'exhausted']) {
+      await setEndedJob(status);
+      const beforeDelete = startCount;
+      const deleteAction = firstControls.querySelector('[data-autodl-scheduler-delete="userscript"]');
+      const visible = deleteAction && !deleteAction.hidden && !deleteAction.disabled;
+      deleteAction?.click();
+      await pause(80);
+      check(`原网页可以删除 ${status} 结束记录而不操作机器`, visible && !state.jobs.some(job => job.uuid === expected[0].uuid) && firstControls.querySelector('[data-autodl-scheduler-progress="userscript"]').hidden && startCount === beforeDelete && nativeStatus.textContent === '已关机');
+    }
+    const secondControls = rowButtons()[1].closest('[data-autodl-scheduler-controls="userscript"]');
+    check('活跃任务不显示删除入口，必须先停止', !secondControls.querySelector('[data-autodl-scheduler-delete="userscript"]') || secondControls.querySelector('[data-autodl-scheduler-delete="userscript"]').hidden);
+    await setEndedJob('success');
+    state.readOnly = true;
+    await refreshUi();
+    const readonlyDelete = firstControls.querySelector('[data-autodl-scheduler-delete="userscript"]');
+    readonlyDelete?.click();
+    await pause(40);
+    check('只读副标签不能删除结束记录', readonlyDelete?.disabled && state.jobs.some(job => job.uuid === expected[0].uuid));
+    state.readOnly = false;
+    await refreshUi();
+    const beforePowerCheck = startCount;
+    for (const status of ['已开机', '运行中', '开机中']) {
+      nativeStatus.textContent = status;
+      await pause(600);
+      rowButtons()[0].click();
+      await pause(40);
+      check(`实例当前${status}时不再发起抢机`, rowButtons()[0].disabled && startCount === beforePowerCheck && !state.jobs.find(job => job.uuid === expected[0].uuid)?.enabled);
+    }
+    nativeStatus.textContent = '已关机';
+    await pause(600);
+    check('页面状态再次关机后立即恢复重新抢机入口', !rowButtons()[0].disabled && rowButtons()[0].textContent.includes('抢机'));
+    firstControls.querySelector('[data-autodl-scheduler-delete="userscript"]').click();
+    await pause(80);
     const host = document.getElementById('autodl-scheduler-host');
     host.remove();
     await pause(550);
@@ -267,6 +331,8 @@ async function runChecks() {
     await pause(80);
     check('销毁后可重新安装并打开面板', rowButtons().length === 2 && !shadowRoot().querySelector('.adls-backdrop').hidden);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    // Leave a completed historical request on an off instance for the release screenshot.
+    await setEndedJob('success');
   } catch (error) {
     check('验证流程完成', false, error.message);
   } finally {

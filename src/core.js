@@ -2,6 +2,17 @@ export const MIN_INTERVAL_SECONDS = 30;
 export const MAX_INTERVAL_SECONDS = 86400;
 export const ACTIVE_STATUSES = new Set(["scheduled", "running", "retrying"]);
 
+// A task result describes a past request, not the instance's current power state.
+// Only current page evidence can make an otherwise idle instance unavailable.
+export function instanceCanStart(instance) {
+  const status = String(instance?.status || "").replace(/\s+/g, "").toLowerCase();
+  if (/(?:已开机|运行中|正在运行|已运行|开机中|正在开机|启动中|正在启动|关机中|正在关机|重启中|正在重启|创建中|释放中|已释放|删除中|已删除|已销毁)/.test(status)) return false;
+  if (/^(?:running|starting|restarting|stopping|provisioning|deleting|deleted|released)$/.test(status)) return false;
+  if (typeof instance?.canPowerOn === "boolean") return instance.canPowerOn;
+  // Missing page information must not turn old success records into a permanent lock.
+  return true;
+}
+
 export function normalizeConfig(input, now = Date.now()) {
   if (!input || typeof input !== "object") throw new Error("任务配置无效");
   const uuid = String(input.uuid || "").trim();

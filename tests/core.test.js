@@ -2,12 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeConfig, parseAuthToken, classifyResponse, retryDelaySeconds,
-  sanitizeMessage, parseRetryAfter,
+  sanitizeMessage, parseRetryAfter, instanceCanStart,
 } from '../src/core.js';
 
 const NOW = Date.parse('2026-10-28T12:00:00Z');
 const UUID = 'pro-test1234';
 const jwt = (payload) => `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`;
+
+test('current power state permits powered-off instances regardless of a historical success result', () => {
+  for (const status of ['已关机', '关机', '已停止', 'stopped', '', undefined]) {
+    assert.equal(instanceCanStart({ status }), true, String(status));
+    assert.equal(instanceCanStart({ status, previousResult: 'success' }), true, String(status));
+  }
+  assert.equal(instanceCanStart(undefined), true);
+  assert.equal(instanceCanStart({ status: '未识别状态', canPowerOn: true }), true);
+  assert.equal(instanceCanStart({ status: '未识别状态', canPowerOn: false }), false);
+});
+
+test('confirmed running and transitional power states prevent starting another task', () => {
+  for (const status of ['已开机', '运行中', '正在运行', '开机中', '启动中', '关机中', '重启中', '已释放', 'running', 'starting']) {
+    assert.equal(instanceCanStart({ status }), false, status);
+    assert.equal(instanceCanStart({ status, canPowerOn: true }), false, status);
+  }
+});
 
 test('configuration defaults to an immediate 60-second task', () => {
   assert.deepEqual(normalizeConfig({ uuid: UUID }, NOW), {

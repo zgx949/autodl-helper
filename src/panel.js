@@ -1,4 +1,6 @@
-export function createPanel(container, scheduler, { initialUuid = '', onClose = () => {} } = {}) {
+import { instanceCanStart } from "./core.js";
+
+export function createPanel(container, scheduler, { initialUuid = '', onClose = () => {}, beforeStart = async () => {} } = {}) {
   const $ = id => container.querySelector(`#${id}`);
   const mutationButtons = ['save-preferences', 'manual-start', 'save-push', 'clear-push', 'clear-logs'];
   const pendingInstances = new Set();
@@ -56,13 +58,14 @@ export function createPanel(container, scheduler, { initialUuid = '', onClose = 
     try { await action(); }
     catch (error) { feedback(error.message || '操作失败，请重试', true); }
     finally {
-      if (button.isConnected) button.disabled = Boolean(button.dataset.active === 'true' || (snapshot?.readOnly && (mutationButtons.includes(button.id) || button.dataset.mutates === 'true')));
+      if (button.isConnected) button.disabled = Boolean(button.dataset.active === 'true' || button.dataset.unavailable === 'true' || (snapshot?.readOnly && (mutationButtons.includes(button.id) || button.dataset.mutates === 'true')));
     }
   }
-  function action(label, className, handler, { disabled = false, uuid = '', mutates = true } = {}) {
+  function action(label, className, handler, { disabled = false, uuid = '', mutates = true, unavailable = false } = {}) {
     const button = node('button', className, label);
     button.type = 'button';
     button.dataset.mutates = String(mutates);
+    button.dataset.unavailable = String(unavailable);
     if (uuid) button.dataset.instanceUuid = uuid;
     button.disabled = Boolean((snapshot?.readOnly && mutates) || disabled);
     button.addEventListener('click', () => { void perform(button, handler); });
@@ -73,8 +76,13 @@ export function createPanel(container, scheduler, { initialUuid = '', onClose = 
     if (snapshot?.jobs?.some(job => job.uuid === instance.uuid && job.enabled)) { focusInstance(instance.uuid); return; }
     pendingInstances.add(instance.uuid);
     try {
+      await beforeStart();
+      await request('GET_STATE');
+      if (snapshot?.jobs?.some(job => job.uuid === instance.uuid && job.enabled)) { focusInstance(instance.uuid); return; }
+      const currentInstance = snapshot?.instances?.find(item => item.uuid === instance.uuid) || instance;
+      if (!instanceCanStart(currentInstance)) throw new Error('实例当前已开机或正在启动，请关机后再抢机');
       selectedUuid = instance.uuid;
-      await request('START_JOB', { config: { uuid: instance.uuid, name: instance.name || instance.uuid } });
+      await request('START_JOB', { config: { uuid: instance.uuid, name: currentInstance.name || instance.name || instance.uuid } });
       feedback('已加入抢机任务，后续会自动重试。');
       focusInstance(instance.uuid);
     } finally { pendingInstances.delete(instance.uuid); }
@@ -100,7 +108,7 @@ export function createPanel(container, scheduler, { initialUuid = '', onClose = 
     }
   }
   function renderJobs(jobs) {
-    const signature = JSON.stringify([jobs, Boolean(snapshot.readOnly)]);
+    const signature = JSON.stringify([jobs, snapshot.instances, Boolean(snapshot.readOnly)]);
     if (signature === jobsSignature) { updateCountdowns(); return; }
     jobsSignature = signature;
     $('jobs-count').textContent = String(jobs.length);
@@ -129,8 +137,10 @@ export function createPanel(container, scheduler, { initialUuid = '', onClose = 
       actions.append(node('span', 'job-uuid', job.uuid));
       if (job.enabled) actions.append(action('停止任务', 'text-button danger-text', () => request('STOP_JOB', { uuid: job.uuid })));
       else {
-        if (job.status !== 'success') actions.append(action('重新抢机', 'text-button accent-text', () => startInstance(job), { uuid: job.uuid }));
-        actions.append(action('删除', 'text-button', () => request('DELETE_JOB', { uuid: job.uuid })));
+        const instance = snapshot.instances?.find(item => item.uuid === job.uuid) || { uuid: job.uuid };
+        const canStart = instanceCanStart(instance);
+        actions.append(action(canStart ? '重新抢机' : instance.status || '已开机', 'text-button accent-text', () => startInstance(job), { uuid: job.uuid, disabled: !canStart, unavailable: !canStart }));
+        actions.append(action('删除记录', 'text-button', () => request('DELETE_JOB', { uuid: job.uuid })));
       }
       item.append(actions);
       content.push(item);
@@ -145,8 +155,7 @@ export function createPanel(container, scheduler, { initialUuid = '', onClose = 
   }
   function renderInstances(instances) {
     const activeIds = new Set((snapshot.jobs || []).filter(job => job.enabled).map(job => job.uuid));
-    const acceptedIds = new Set((snapshot.jobs || []).filter(job => job.status === 'success').map(job => job.uuid));
-    const signature = JSON.stringify([instances, [...activeIds], [...acceptedIds], snapshot.readOnly, snapshot.auth?.available]);
+    const signature = JSON.stringify([instances, [...activeIds], snapshot.readOnly, snapshot.auth?.available]);
     if (signature === instancesSignature) return;
     instancesSignature = signature;
     const content = [];
@@ -155,10 +164,10 @@ export function createPanel(container, scheduler, { initialUuid = '', onClose = 
       const copy = node('div', 'instance-copy');
       copy.append(node('strong', 'instance-title', instance.name || instance.uuid), node('span', 'instance-meta', instance.status || instance.uuid));
       const active = activeIds.has(instance.uuid);
-      const accepted = acceptedIds.has(instance.uuid);
-      const button = action(active ? '抢机中' : accepted ? '查看结果' : '抢机', `button ${active || accepted ? 'secondary' : 'primary'} quick-start`, accepted ? () => focusInstance(instance.uuid) : () => startInstance(instance), { disabled: active, uuid: instance.uuid, mutates: !accepted });
+      const canStart = instanceCanStart(instance);
+      const button = action(active ? '抢机中' : !canStart ? instance.status || '已开机' : '抢机', `button ${active || !canStart ? 'secondary' : 'primary'} quick-start`, () => startInstance(instance), { disabled: active || !canStart, uuid: instance.uuid, unavailable: !canStart });
       button.dataset.active = String(active);
-      button.setAttribute('aria-label', active ? `${instance.name || instance.uuid} 抢机中` : accepted ? `查看 ${instance.name || instance.uuid} 抢机结果` : `抢机 ${instance.name || instance.uuid}`);
+      button.setAttribute('aria-label', active ? `${instance.name || instance.uuid} 抢机中` : !canStart ? `${instance.name || instance.uuid} ${instance.status || '已开机'}` : `抢机 ${instance.name || instance.uuid}`);
       item.append(copy, button);
       content.push(item);
     }

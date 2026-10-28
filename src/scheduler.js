@@ -1,4 +1,4 @@
-import { normalizeConfig, parseAuthToken, classifyResponse, retryDelaySeconds, parseRetryAfter, sanitizeMessage } from "./core.js";
+import { normalizeConfig, parseAuthToken, classifyResponse, retryDelaySeconds, parseRetryAfter, sanitizeMessage, instanceCanStart } from "./core.js";
 
 export function createScheduler({
   storage,
@@ -156,6 +156,12 @@ export function createScheduler({
         void report("AutoDL 任务已停止", job.lastMessage, uuid);
         return null;
       }
+      const instance = state.instances.find(item => item.uuid === uuid);
+      if (!instanceCanStart(instance)) {
+        stopJob(job, `实例当前${instance?.status || "不可开机"}，已停止后续抢机尝试`, "stopped");
+        await persist();
+        return null;
+      }
       job.attempts += 1;
       job.status = "running";
       job.inFlightAt = now();
@@ -240,7 +246,8 @@ export function createScheduler({
       const byId = new Map(state.instances.map(item => [item.uuid, item]));
       for (const item of Array.isArray(payload.instances) ? payload.instances.slice(0, 200) : []) {
         if (!/^pro-[a-z0-9]{4,64}$/.test(item?.uuid || "")) continue;
-        byId.set(item.uuid, { uuid: item.uuid, name: String(item.name || item.uuid).slice(0, 80), status: String(item.status || "").slice(0, 40) });
+        byId.set(item.uuid, { uuid: item.uuid, name: String(item.name || item.uuid).slice(0, 80), status: String(item.status || "").slice(0, 40),
+          canPowerOn: typeof item.canPowerOn === "boolean" ? item.canPowerOn : null });
       }
       state.instances = [...byId.values()].slice(-200);
       await persist();
@@ -270,6 +277,7 @@ export function createScheduler({
             if (state.jobs.filter(item => item.enabled).length >= 20) throw new Error("最多同时运行 20 个实例任务");
             if (!job && state.jobs.length >= 100) throw new Error("请先删除不需要的历史任务，最多保存 100 个");
             const instance = state.instances.find(item => item.uuid === config.uuid);
+            if (!instanceCanStart(instance)) throw new Error(`实例当前${instance?.status || "不可开机"}，请在关机后再抢机`);
             const next = { ...config, name: config.name === config.uuid && instance ? instance.name : config.name,
               enabled: true, status: config.startAt > now() + 1000 ? "scheduled" : "running", attempts: 0, consecutiveFailures: 0,
               nextRunAt: config.startAt, updatedAt: now(), startedAt: now(), inFlightAt: null,

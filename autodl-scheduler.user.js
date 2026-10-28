@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AutoDL Helper · 一键抢机
 // @namespace    autodl-scheduler.local
-// @version      1.1.0
+// @version      1.1.1
 // @description  在 AutoDL 实例行一键抢机、自动重试，直接查看进度；定时和间隔可在高级设置中调整。
 // @author       zgx949
 // @license      MIT
@@ -27,6 +27,17 @@
 const MIN_INTERVAL_SECONDS = 30;
 const MAX_INTERVAL_SECONDS = 86400;
 const ACTIVE_STATUSES = new Set(["scheduled", "running", "retrying"]);
+
+// A task result describes a past request, not the instance's current power state.
+// Only current page evidence can make an otherwise idle instance unavailable.
+function instanceCanStart(instance) {
+  const status = String(instance?.status || "").replace(/\s+/g, "").toLowerCase();
+  if (/(?:已开机|运行中|正在运行|已运行|开机中|正在开机|启动中|正在启动|关机中|正在关机|重启中|正在重启|创建中|释放中|已释放|删除中|已删除|已销毁)/.test(status)) return false;
+  if (/^(?:running|starting|restarting|stopping|provisioning|deleting|deleted|released)$/.test(status)) return false;
+  if (typeof instance?.canPowerOn === "boolean") return instance.canPowerOn;
+  // Missing page information must not turn old success records into a permanent lock.
+  return true;
+}
 
 function normalizeConfig(input, now = Date.now()) {
   if (!input || typeof input !== "object") throw new Error("任务配置无效");
@@ -256,6 +267,12 @@ function createScheduler({
         void report("AutoDL 任务已停止", job.lastMessage, uuid);
         return null;
       }
+      const instance = state.instances.find(item => item.uuid === uuid);
+      if (!instanceCanStart(instance)) {
+        stopJob(job, `实例当前${instance?.status || "不可开机"}，已停止后续抢机尝试`, "stopped");
+        await persist();
+        return null;
+      }
       job.attempts += 1;
       job.status = "running";
       job.inFlightAt = now();
@@ -340,7 +357,8 @@ function createScheduler({
       const byId = new Map(state.instances.map(item => [item.uuid, item]));
       for (const item of Array.isArray(payload.instances) ? payload.instances.slice(0, 200) : []) {
         if (!/^pro-[a-z0-9]{4,64}$/.test(item?.uuid || "")) continue;
-        byId.set(item.uuid, { uuid: item.uuid, name: String(item.name || item.uuid).slice(0, 80), status: String(item.status || "").slice(0, 40) });
+        byId.set(item.uuid, { uuid: item.uuid, name: String(item.name || item.uuid).slice(0, 80), status: String(item.status || "").slice(0, 40),
+          canPowerOn: typeof item.canPowerOn === "boolean" ? item.canPowerOn : null });
       }
       state.instances = [...byId.values()].slice(-200);
       await persist();
@@ -370,6 +388,7 @@ function createScheduler({
             if (state.jobs.filter(item => item.enabled).length >= 20) throw new Error("最多同时运行 20 个实例任务");
             if (!job && state.jobs.length >= 100) throw new Error("请先删除不需要的历史任务，最多保存 100 个");
             const instance = state.instances.find(item => item.uuid === config.uuid);
+            if (!instanceCanStart(instance)) throw new Error(`实例当前${instance?.status || "不可开机"}，请在关机后再抢机`);
             const next = { ...config, name: config.name === config.uuid && instance ? instance.name : config.name,
               enabled: true, status: config.startAt > now() + 1000 ? "scheduled" : "running", attempts: 0, consecutiveFailures: 0,
               nextRunAt: config.startAt, updatedAt: now(), startedAt: now(), inFlightAt: null,
@@ -425,7 +444,8 @@ function createScheduler({
 
 
 // Source: src/panel.js
-function createPanel(container, scheduler, { initialUuid = '', onClose = () => {} } = {}) {
+
+function createPanel(container, scheduler, { initialUuid = '', onClose = () => {}, beforeStart = async () => {} } = {}) {
   const $ = id => container.querySelector(`#${id}`);
   const mutationButtons = ['save-preferences', 'manual-start', 'save-push', 'clear-push', 'clear-logs'];
   const pendingInstances = new Set();
@@ -483,13 +503,14 @@ function createPanel(container, scheduler, { initialUuid = '', onClose = () => {
     try { await action(); }
     catch (error) { feedback(error.message || '操作失败，请重试', true); }
     finally {
-      if (button.isConnected) button.disabled = Boolean(button.dataset.active === 'true' || (snapshot?.readOnly && (mutationButtons.includes(button.id) || button.dataset.mutates === 'true')));
+      if (button.isConnected) button.disabled = Boolean(button.dataset.active === 'true' || button.dataset.unavailable === 'true' || (snapshot?.readOnly && (mutationButtons.includes(button.id) || button.dataset.mutates === 'true')));
     }
   }
-  function action(label, className, handler, { disabled = false, uuid = '', mutates = true } = {}) {
+  function action(label, className, handler, { disabled = false, uuid = '', mutates = true, unavailable = false } = {}) {
     const button = node('button', className, label);
     button.type = 'button';
     button.dataset.mutates = String(mutates);
+    button.dataset.unavailable = String(unavailable);
     if (uuid) button.dataset.instanceUuid = uuid;
     button.disabled = Boolean((snapshot?.readOnly && mutates) || disabled);
     button.addEventListener('click', () => { void perform(button, handler); });
@@ -500,8 +521,13 @@ function createPanel(container, scheduler, { initialUuid = '', onClose = () => {
     if (snapshot?.jobs?.some(job => job.uuid === instance.uuid && job.enabled)) { focusInstance(instance.uuid); return; }
     pendingInstances.add(instance.uuid);
     try {
+      await beforeStart();
+      await request('GET_STATE');
+      if (snapshot?.jobs?.some(job => job.uuid === instance.uuid && job.enabled)) { focusInstance(instance.uuid); return; }
+      const currentInstance = snapshot?.instances?.find(item => item.uuid === instance.uuid) || instance;
+      if (!instanceCanStart(currentInstance)) throw new Error('实例当前已开机或正在启动，请关机后再抢机');
       selectedUuid = instance.uuid;
-      await request('START_JOB', { config: { uuid: instance.uuid, name: instance.name || instance.uuid } });
+      await request('START_JOB', { config: { uuid: instance.uuid, name: currentInstance.name || instance.name || instance.uuid } });
       feedback('已加入抢机任务，后续会自动重试。');
       focusInstance(instance.uuid);
     } finally { pendingInstances.delete(instance.uuid); }
@@ -527,7 +553,7 @@ function createPanel(container, scheduler, { initialUuid = '', onClose = () => {
     }
   }
   function renderJobs(jobs) {
-    const signature = JSON.stringify([jobs, Boolean(snapshot.readOnly)]);
+    const signature = JSON.stringify([jobs, snapshot.instances, Boolean(snapshot.readOnly)]);
     if (signature === jobsSignature) { updateCountdowns(); return; }
     jobsSignature = signature;
     $('jobs-count').textContent = String(jobs.length);
@@ -556,8 +582,10 @@ function createPanel(container, scheduler, { initialUuid = '', onClose = () => {
       actions.append(node('span', 'job-uuid', job.uuid));
       if (job.enabled) actions.append(action('停止任务', 'text-button danger-text', () => request('STOP_JOB', { uuid: job.uuid })));
       else {
-        if (job.status !== 'success') actions.append(action('重新抢机', 'text-button accent-text', () => startInstance(job), { uuid: job.uuid }));
-        actions.append(action('删除', 'text-button', () => request('DELETE_JOB', { uuid: job.uuid })));
+        const instance = snapshot.instances?.find(item => item.uuid === job.uuid) || { uuid: job.uuid };
+        const canStart = instanceCanStart(instance);
+        actions.append(action(canStart ? '重新抢机' : instance.status || '已开机', 'text-button accent-text', () => startInstance(job), { uuid: job.uuid, disabled: !canStart, unavailable: !canStart }));
+        actions.append(action('删除记录', 'text-button', () => request('DELETE_JOB', { uuid: job.uuid })));
       }
       item.append(actions);
       content.push(item);
@@ -572,8 +600,7 @@ function createPanel(container, scheduler, { initialUuid = '', onClose = () => {
   }
   function renderInstances(instances) {
     const activeIds = new Set((snapshot.jobs || []).filter(job => job.enabled).map(job => job.uuid));
-    const acceptedIds = new Set((snapshot.jobs || []).filter(job => job.status === 'success').map(job => job.uuid));
-    const signature = JSON.stringify([instances, [...activeIds], [...acceptedIds], snapshot.readOnly, snapshot.auth?.available]);
+    const signature = JSON.stringify([instances, [...activeIds], snapshot.readOnly, snapshot.auth?.available]);
     if (signature === instancesSignature) return;
     instancesSignature = signature;
     const content = [];
@@ -582,10 +609,10 @@ function createPanel(container, scheduler, { initialUuid = '', onClose = () => {
       const copy = node('div', 'instance-copy');
       copy.append(node('strong', 'instance-title', instance.name || instance.uuid), node('span', 'instance-meta', instance.status || instance.uuid));
       const active = activeIds.has(instance.uuid);
-      const accepted = acceptedIds.has(instance.uuid);
-      const button = action(active ? '抢机中' : accepted ? '查看结果' : '抢机', `button ${active || accepted ? 'secondary' : 'primary'} quick-start`, accepted ? () => focusInstance(instance.uuid) : () => startInstance(instance), { disabled: active, uuid: instance.uuid, mutates: !accepted });
+      const canStart = instanceCanStart(instance);
+      const button = action(active ? '抢机中' : !canStart ? instance.status || '已开机' : '抢机', `button ${active || !canStart ? 'secondary' : 'primary'} quick-start`, () => startInstance(instance), { disabled: active || !canStart, uuid: instance.uuid, unavailable: !canStart });
       button.dataset.active = String(active);
-      button.setAttribute('aria-label', active ? `${instance.name || instance.uuid} 抢机中` : accepted ? `查看 ${instance.name || instance.uuid} 抢机结果` : `抢机 ${instance.name || instance.uuid}`);
+      button.setAttribute('aria-label', active ? `${instance.name || instance.uuid} 抢机中` : !canStart ? `${instance.name || instance.uuid} ${instance.status || '已开机'}` : `抢机 ${instance.name || instance.uuid}`);
       item.append(copy, button);
       content.push(item);
     }
@@ -805,6 +832,22 @@ function installPage(scheduler, panelMarkup, panelCss) {
     return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分后`;
   }
 
+  function rowInstanceState(row) {
+    const status = (row.querySelector('.status')?.textContent || '').trim();
+    // AutoDL's native action is a button with a nested, whitespace-padded span.
+    // Do not infer a running machine from a missing/disabled action: the site
+    // can temporarily disable controls while loading and test fixtures are inert.
+    const powerOnAction = [...row.querySelectorAll('button, a, [role="button"]')]
+      .find(element => !element.closest('[data-autodl-scheduler-controls="userscript"]') && element.textContent.trim() === '开机');
+    const canPowerOn = powerOnAction && !powerOnAction.matches(':disabled') &&
+      powerOnAction.getAttribute('aria-disabled') !== 'true' && !powerOnAction.classList.contains('is-disabled') ? true : null;
+    return { status, canPowerOn };
+  }
+
+  async function syncCurrentPage() {
+    await scheduler.syncPage({ ...getCredentials(), instances: readInstances(), pageUrl: location.href });
+  }
+
   function renderRows() {
     const jobs = new Map((taskSnapshot?.jobs || []).map(job => [job.uuid, job]));
     const readOnly = Boolean(taskSnapshot?.readOnly);
@@ -812,13 +855,15 @@ function installPage(scheduler, panelMarkup, panelCss) {
       if (!row.isConnected || !controls.wrapper.isConnected) { rowControls.delete(row); continue; }
       const job = jobs.get(controls.uuid);
       const active = Boolean(job?.enabled);
-      const showResult = job?.status === 'success';
-      setText(controls.button, active ? '查看进度' : showResult ? '查看结果' : job ? '重新抢机' : '抢机');
-      controls.button.disabled = controls.busy || (!active && !showResult && readOnly);
+      const instance = rowInstanceState(row);
+      const canStart = instanceCanStart(instance);
+      const stateLabel = instance.status || '已开机';
+      setText(controls.button, active ? '查看进度' : !canStart ? stateLabel : job ? '重新抢机' : '抢机');
+      controls.button.disabled = controls.busy || (!active && (readOnly || !canStart));
       controls.button.style.opacity = controls.button.disabled ? '.55' : '1';
       controls.button.style.cursor = controls.button.disabled ? 'default' : 'pointer';
-      controls.button.title = readOnly && !active && !showResult ? taskSnapshot.blockedReason || '请在管理任务的标签页操作' : '';
-      controls.button.setAttribute('aria-label', `${active ? '查看' : showResult ? '查看' : '为'} ${controls.name} ${active ? '的抢机进度' : showResult ? '的抢机结果' : '抢机'}`);
+      controls.button.title = readOnly && !active ? taskSnapshot.blockedReason || '请在管理任务的标签页操作' : !active && !canStart ? '实例当前已开机或正在启动，请关机后再抢机' : '';
+      controls.button.setAttribute('aria-label', active ? `查看 ${controls.name} 的抢机进度` : !canStart ? `${controls.name} ${stateLabel}` : `为 ${controls.name} 抢机`);
       controls.progress.hidden = !job;
       controls.progress.style.display = job ? 'flex' : 'none';
       controls.stop.hidden = !active;
@@ -826,12 +871,17 @@ function installPage(scheduler, panelMarkup, panelCss) {
       controls.stop.disabled = controls.busy || readOnly;
       controls.stop.style.opacity = controls.stop.disabled ? '.55' : '1';
       controls.stop.title = readOnly ? taskSnapshot.blockedReason || '请在管理任务的标签页操作' : '停止后续抢机尝试';
+      controls.remove.hidden = !job || active;
+      controls.remove.style.display = job && !active ? 'inline-block' : 'none';
+      controls.remove.disabled = controls.busy || readOnly;
+      controls.remove.style.opacity = controls.remove.disabled ? '.55' : '1';
+      controls.remove.title = readOnly ? taskSnapshot.blockedReason || '请在管理任务的标签页操作' : '只删除抢机记录，不修改 AutoDL 实例';
       if (job) {
-        const stateText = { scheduled: '等待开始', running: '正在抢机', retrying: '等待重试', success: '开机已受理', stopped: '已停止', error: '需检查', exhausted: '次数已用完' }[job.status] || '等待中';
+        const stateText = job.status === 'success' && canStart ? '上次已受理' : { scheduled: '等待开始', running: '正在抢机', retrying: '等待重试', success: '开机已受理', stopped: '已停止', error: '需检查', exhausted: '次数已用完' }[job.status] || '等待中';
         const detail = `${stateText} · 已尝试 ${job.attempts || 0} 次${active && job.nextRunAt ? ` · ${countdown(job.nextRunAt)}` : ''}`;
         setText(controls.status, detail);
         controls.status.title = job.lastMessage || '';
-        controls.status.style.color = ['error', 'exhausted'].includes(job.status) ? '#b65c42' : showResult ? '#16815f' : '#69817b';
+        controls.status.style.color = ['error', 'exhausted'].includes(job.status) ? '#b65c42' : job.status === 'success' ? '#16815f' : '#69817b';
       }
     }
   }
@@ -862,10 +912,16 @@ function installPage(scheduler, panelMarkup, panelCss) {
     controls.busy = true;
     renderRows();
     try {
+      if (type === 'START_JOB') {
+        if (!instanceCanStart(rowInstanceState(controls.row))) throw new Error('实例当前已开机或正在启动，请关机后再抢机');
+        // The user may have just shut down the instance. Sync its current DOM
+        // state before START_JOB so a stale running snapshot cannot block it.
+        await syncCurrentPage();
+      }
       const response = await scheduler.command(type, type === 'START_JOB' ? { config: { uuid: controls.uuid, name: controls.name } } : { uuid: controls.uuid });
       if (!response?.ok) throw new Error(response?.error || '操作未完成，请稍后重试');
       applySnapshot(response.snapshot);
-      showToast(type === 'START_JOB' ? (response.snapshot?.jobs?.find(job => job.uuid === controls.uuid)?.status === 'scheduled' ? '已添加抢机任务，将在预约时间开始' : '已开始抢机，暂无库存时会自动重试') : '已停止后续抢机尝试');
+      showToast(type === 'START_JOB' ? (response.snapshot?.jobs?.find(job => job.uuid === controls.uuid)?.status === 'scheduled' ? '已添加抢机任务，将在预约时间开始' : '已开始抢机，暂无库存时会自动重试') : type === 'DELETE_JOB' ? '已删除抢机记录' : '已停止后续抢机尝试');
     } catch (error) { showToast(error.message || '操作未完成，请稍后重试', true); }
     finally { controls.busy = false; renderRows(); }
   }
@@ -887,7 +943,7 @@ function installPage(scheduler, panelMarkup, panelCss) {
     if (backdrop.hidden) previousFocus = document.activeElement;
     if (!panel) {
       panelContainer.innerHTML = panelMarkup;
-      panel = createPanel(panelContainer, scheduler, { initialUuid: uuid, onClose: closePanel });
+      panel = createPanel(panelContainer, scheduler, { initialUuid: uuid, onClose: closePanel, beforeStart: syncCurrentPage });
     } else {
       panel.selectInstance(uuid);
     }
@@ -949,8 +1005,8 @@ function installPage(scheduler, panelMarkup, panelCss) {
       if (!uuidElement) continue;
       const uuid = uuidElement.textContent.trim();
       const name = (uuidElement.nextElementSibling?.querySelector('span:not(.iconfont)')?.textContent || '').trim();
-      const status = (row.querySelector('.status')?.textContent || '').trim();
-      instances.set(uuid, { uuid, name: name || uuid, status });
+      const instanceState = rowInstanceState(row);
+      instances.set(uuid, { uuid, name: name || uuid, ...instanceState });
 
       const actions = row.querySelector('td:last-child .cell');
       if (!actions) continue;
@@ -976,21 +1032,32 @@ function installPage(scheduler, panelMarkup, panelCss) {
         stop.textContent = '停止';
         stop.hidden = true;
         stop.style.cssText = 'display:none;width:auto;min-height:0;margin:0;padding:0 3px;border:0;background:transparent;color:#b7614d;font-size:10px;line-height:1.6;cursor:pointer;white-space:nowrap';
-        progress.append(statusElement, stop);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.dataset.autodlSchedulerDelete = 'userscript';
+        remove.textContent = '删除记录';
+        remove.hidden = true;
+        remove.style.cssText = 'display:none;width:auto;min-height:0;margin:0;padding:0 3px;border:0;background:transparent;color:#7b9289;font-size:10px;line-height:1.6;cursor:pointer;white-space:nowrap';
+        progress.append(statusElement, stop, remove);
         wrapper.append(button, progress);
-        controls = { wrapper, button, progress, status: statusElement, stop, uuid, name: name || uuid, busy: false };
+        controls = { row, wrapper, button, progress, status: statusElement, stop, remove, uuid, name: name || uuid, busy: false };
         rowControls.set(row, controls);
         button.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
           const job = taskSnapshot?.jobs?.find(item => item.uuid === controls.uuid);
-          if (job?.enabled || job?.status === 'success') openPanel(controls.uuid);
+          if (job?.enabled) openPanel(controls.uuid);
           else void rowCommand(controls, 'START_JOB');
         });
         stop.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
           void rowCommand(controls, 'STOP_JOB');
+        });
+        remove.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void rowCommand(controls, 'DELETE_JOB');
         });
         actions.append(wrapper);
       }

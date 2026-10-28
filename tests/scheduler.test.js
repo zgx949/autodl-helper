@@ -358,3 +358,93 @@ test('invalid preferences are rejected without changing saved defaults', async (
   assert.equal(h.timers.size, 0);
   h.destroy();
 });
+
+test('a powered-off instance can start a new round after a successful request without deleting history', async () => {
+  const h = await harness({ request: async () => response(200, { code: 'Success' }) });
+  await h.syncPage({ token: jwt(), instances: [{ uuid: UUID, name: 'Reusable instance', status: '已关机', canPowerOn: true }] });
+  await h.start();
+  const accepted = await h.runNext();
+  assert.equal(accepted.jobs[0].status, 'success');
+  const oldRunId = h.persisted().jobs[0].runId;
+  const restarted = await h.command('START_JOB', { config: { uuid: UUID } });
+  assert.equal(restarted.ok, true, restarted.error);
+  assert.equal(restarted.snapshot.jobs.length, 1);
+  assert.equal(restarted.snapshot.jobs[0].attempts, 0);
+  assert.equal(restarted.snapshot.jobs[0].enabled, true);
+  assert.equal(restarted.snapshot.jobs[0].nextRunAt, h.now());
+  assert.notEqual(h.persisted().jobs[0].runId, oldRunId);
+  assert.equal(h.calls.length, 1);
+  assert.equal((await h.runNext()).jobs[0].status, 'success');
+  assert.equal(h.calls.length, 2);
+  h.destroy();
+});
+
+test('each ended record can be deleted without changing instances or another active task', async (t) => {
+  for (const status of ['success', 'stopped', 'error', 'exhausted']) await t.test(status, async () => {
+    const saved = { version: 1, jobs: [{ uuid: UUID, name: 'Ended job', enabled: false, status, attempts: 2 }],
+      instances: [{ uuid: UUID, name: 'Reusable instance', status: '已关机' }], logs: [] };
+    const h = await harness({ saved });
+    await h.start({ uuid: 'pro-other1234', startAt: NOW + 3600000 });
+    const result = await h.command('DELETE_JOB', { uuid: UUID });
+    assert.equal(result.ok, true, result.error);
+    assert.ok(!result.snapshot.jobs.some(job => job.uuid === UUID));
+    assert.ok(result.snapshot.jobs.some(job => job.uuid === 'pro-other1234' && job.enabled));
+    assert.ok(result.snapshot.instances.some(instance => instance.uuid === UUID));
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.timers.size, 1);
+    h.destroy();
+  });
+});
+
+test('an active record must be stopped before deletion and remains scheduled if deletion is refused', async () => {
+  const h = await harness();
+  await h.start({ startAt: NOW + 3600000 });
+  await h.start({ uuid: 'pro-other1234', startAt: NOW + 7200000 });
+  const refused = await h.command('DELETE_JOB', { uuid: UUID });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /停止/);
+  assert.equal((await h.state()).jobs.filter(job => job.enabled).length, 2);
+  assert.equal(h.timers.size, 2);
+  assert.equal(h.calls.length, 0);
+  assert.equal((await h.command('STOP_JOB', { uuid: UUID })).ok, true);
+  assert.equal((await h.command('DELETE_JOB', { uuid: UUID })).ok, true);
+  assert.equal(h.timers.size, 1);
+  h.destroy();
+});
+
+test('confirmed running and starting instances reject a new task regardless of old successful history', async (t) => {
+  for (const status of ['已开机', '运行中', '开机中']) await t.test(status, async () => {
+    const saved = { version: 1, jobs: [{ uuid: UUID, name: 'Old success', enabled: false, status: 'success', attempts: 1 }], instances: [], logs: [] };
+    const h = await harness({ saved });
+    await h.syncPage({ token: jwt(), instances: [{ uuid: UUID, name: 'Running instance', status, canPowerOn: false }] });
+    const result = await h.command('START_JOB', { config: { uuid: UUID } });
+    assert.equal(result.ok, false);
+    assert.equal((await h.state()).jobs[0].status, 'success');
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.timers.size, 0);
+    h.destroy();
+  });
+});
+
+test('a current power-off update unlocks a previously running instance for a new task', async () => {
+  const h = await harness({ request: async () => stock() });
+  await h.syncPage({ token: jwt(), instances: [{ uuid: UUID, status: '运行中', canPowerOn: false }] });
+  assert.equal((await h.command('START_JOB', { config: { uuid: UUID } })).ok, false);
+  await h.syncPage({ token: jwt(), instances: [{ uuid: UUID, status: '已关机', canPowerOn: true }] });
+  assert.equal((await h.command('START_JOB', { config: { uuid: UUID } })).ok, true);
+  assert.equal((await h.runNext()).jobs[0].status, 'retrying');
+  assert.equal(h.calls.length, 1);
+  h.destroy();
+});
+
+test('a queued task does not send another power-on request after the page reports the instance running', async () => {
+  const h = await harness({ request: async () => stock() });
+  await h.syncPage({ token: jwt(), instances: [{ uuid: UUID, status: '已关机', canPowerOn: true }] });
+  await h.start({ startAt: NOW + 3600000 });
+  await h.syncPage({ token: jwt(), instances: [{ uuid: UUID, status: '运行中', canPowerOn: false }] });
+  const state = await h.runNext();
+  assert.equal(state.jobs[0].enabled, false);
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.timers.size, 0);
+  h.destroy();
+});
