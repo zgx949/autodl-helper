@@ -1,0 +1,29 @@
+{
+  "name": "autodl-helper",
+  "version": "1.1.0",
+  "description": "AutoDL Pro 实例一键抢机、自动重试与行内进度的 Tampermonkey 用户脚本。",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "zgx949",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zgx949/autodl-helper.git"
+  },
+  "homepage": "https://github.com/zgx949/autodl-helper#readme",
+  "bugs": {
+    "url": "https://github.com/zgx949/autodl-helper/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/build.mjs --check && node scripts/check.mjs",
+    "check:public": "node scripts/check-public.mjs",
+    "validate": "npm run build && npm run check && npm test",
+    "preview": "python3 scripts/preview.py --serve",
+    "package": "npm run build"
+  }
+}

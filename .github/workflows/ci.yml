@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Node.js ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+
+      # The project has no npm dependencies or lockfile, so no install step is needed.
+      - name: Build userscript
+        run: npm run build
+
+      - name: Check syntax, metadata, UI bindings and embedded credentials
+        run: npm run check
+
+      - name: Check public files for local data and credentials
+        run: npm run check:public
+
+      - name: Run mocked tests
+        run: npm test
+
+      - name: Verify committed userscript matches source
+        run: git diff --exit-code -- autodl-scheduler.user.js
+
+      - name: Build offline preview from synthetic fixtures
+        if: matrix.node == '22'
+        run: python3 scripts/preview.py

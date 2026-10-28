@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安装与常见问题
+    url: https://github.com/zgx949/autodl-helper/blob/main/docs/FAQ.md
+    about: 先查看脚本未运行、登录状态、标签页休眠和任务暂停等说明。
+  - name: 安全问题与凭证泄露
+    url: https://github.com/zgx949/autodl-helper/blob/main/SECURITY.md
+    about: 请通过安全报告流程处理，不要在公开 Issue 中提交密钥。

@@ -1,0 +1,62 @@
+<main class="app">
+  <header class="masthead">
+    <div class="brand-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="5"/><path d="M8 8h8v8H8zM9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3"/></svg></div>
+    <div><div class="eyebrow">AUTODL ASSISTANT</div><h1>抢机任务</h1></div>
+    <button id="open-autodl" class="button ghost compact" type="button">实例列表 ↗</button>
+    <button id="close-panel" class="text-button panel-close" type="button" aria-label="关闭抢机面板">×</button>
+  </header>
+
+  <section class="connection" aria-label="登录状态">
+    <span id="auth-dot" class="dot"></span>
+    <div class="connection-copy"><strong id="auth-status">正在连接…</strong><span id="auth-detail">自动读取当前页面登录状态</span></div>
+    <span id="active-count" class="pill">0 个进行中</span>
+  </section>
+  <div id="feedback" class="feedback" role="status" aria-live="polite" hidden></div>
+
+  <section class="card jobs-section">
+    <div class="section-heading"><h2>抢机进度 <span id="jobs-count" class="count">0</span></h2><button id="refresh" class="text-button" type="button">刷新</button></div>
+    <div id="jobs" class="jobs"><div class="empty-state">还没有抢机任务<br><span>在实例旁点一下“抢机”，这里就会显示进度</span></div></div>
+  </section>
+
+  <section class="card instances-section">
+    <div class="section-heading"><h2>添加实例</h2><span class="muted small">点一下，自动等待库存</span></div>
+    <div id="instances" class="instances"><p class="muted small">正在读取页面中的实例…</p></div>
+  </section>
+
+  <details id="advanced-settings" class="card settings">
+    <summary>高级设置<span class="summary-hint">通常无需修改</span></summary>
+    <div class="settings-body">
+      <h3>新任务设置</h3>
+      <p class="muted small">默认立即开始、持续等待库存。设置只影响之后添加的任务。</p>
+      <form id="preferences-form">
+        <label for="start-at">开始时间 <span class="label-hint">留空立即开始 · 本地时间</span></label>
+        <input id="start-at" type="datetime-local" step="1">
+        <div class="form-grid">
+          <div><label for="interval">重试间隔 <span class="label-hint">秒</span></label><input id="interval" type="number" min="30" max="86400" step="1" value="60" required></div>
+          <div><label for="max-attempts">最多尝试 <span class="label-hint">0 = 不限</span></label><input id="max-attempts" type="number" min="0" max="100000" step="1" value="0" required></div>
+        </div>
+        <div class="settings-actions"><button id="save-preferences" class="button secondary" type="submit">保存设置</button></div>
+      </form>
+      <div class="divider"></div>
+      <h3>微信通知</h3>
+      <p class="muted small">可选。开机请求受理后通过 WxPusher 通知，密钥仅在当前页面有效。</p>
+      <label for="push-token">WxPusher SPT <span id="push-status" class="label-hint">未配置</span></label>
+      <input id="push-token" type="password" placeholder="SPT_…" autocomplete="off" spellcheck="false">
+      <div class="settings-actions"><button id="save-push" class="button secondary" type="button">保存通知</button><button id="clear-push" class="text-button" type="button">清除</button></div>
+      <div class="divider"></div>
+      <h3>手动添加实例</h3>
+      <p class="muted small">页面未识别到实例时使用。</p>
+      <form id="manual-form" class="manual-form">
+        <label class="sr-only" for="instance-uuid">实例 ID</label>
+        <input id="instance-uuid" type="text" placeholder="pro-xxxxxxxxxxxx" autocomplete="off" spellcheck="false" maxlength="80">
+        <button id="manual-start" class="button secondary" type="submit">抢机</button>
+      </form>
+    </div>
+  </details>
+
+  <details class="card settings logs-section">
+    <summary>运行记录<span class="summary-hint">查看详情</span></summary>
+    <div class="settings-body"><div class="log-toolbar"><button id="clear-logs" class="text-button" type="button">清空记录</button></div><div id="logs" class="logs"><p class="muted small">暂无运行记录</p></div></div>
+  </details>
+  <footer>保持此标签页打开。电脑休眠或后台节流可能延迟重试。<br>“已受理”代表开机请求被接受，运行状态以控制台为准。</footer>
+</main>

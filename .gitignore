@@ -1,0 +1,33 @@
+# Local captures can contain account information. Keep them out of Git.
+/html/
+/preview/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.local
+
+# Runtime, dependencies, caches and generated test reports
+node_modules/
+coverage/
+.nyc_output/
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+test-results/
+playwright-report/
+
+# The root .user.js is intentionally committed for direct installation.

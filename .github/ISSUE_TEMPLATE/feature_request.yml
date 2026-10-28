@@ -1,0 +1,28 @@
+name: 功能建议
+description: 描述一个具体使用场景和希望改进的体验。
+title: '[Feature] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提出建议。请描述实际使用场景，不要提交登录凭证、推送密钥或未脱敏页面。
+        本项目目前用于已有个人账户 Pro 实例的开机重试。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 遇到的问题或使用场景
+      description: 目前哪一步不方便？这个问题会在什么情况下出现？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 希望的行为
+      description: 描述你期望完成的操作和反馈，可附脱敏草图。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已尝试的方式或补充说明
+      description: 可选。无需提供真实账号或执行收费操作来证明需求。
