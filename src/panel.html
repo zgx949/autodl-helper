@@ -32,7 +32,7 @@
         <label for="start-at">开始时间 <span class="label-hint">留空立即开始 · 本地时间</span></label>
         <input id="start-at" type="datetime-local" step="1">
         <div class="form-grid">
-          <div><label for="interval">重试间隔 <span class="label-hint">秒</span></label><input id="interval" type="number" min="30" max="86400" step="1" value="60" required></div>
+          <div><label for="interval">重试间隔 <span class="label-hint">秒 · 支持小数，0 = 不等待</span></label><input id="interval" type="number" min="0" max="86400" step="any" value="60" required></div>
           <div><label for="max-attempts">最多尝试 <span class="label-hint">0 = 不限</span></label><input id="max-attempts" type="number" min="0" max="100000" step="1" value="0" required></div>
         </div>
         <div class="settings-actions"><button id="save-preferences" class="button secondary" type="submit">保存设置</button></div>

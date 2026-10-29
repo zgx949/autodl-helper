@@ -56,8 +56,15 @@ test('configuration refuses malformed or unrelated instance identifiers', () => 
   }
 });
 
-test('configuration enforces minimum interval and integer attempt limit', () => {
-  for (const intervalSeconds of [0, 29, 30.1, 86401, Infinity, 'NaN']) {
+test('configuration accepts zero and fractional intervals without changing the default', () => {
+  for (const intervalSeconds of [0, 0.001, 0.1, 1, 29, 30.1, '0', '0.1']) {
+    assert.equal(normalizeConfig({ uuid: UUID, intervalSeconds }, NOW).intervalSeconds, Number(intervalSeconds));
+  }
+  assert.equal(normalizeConfig({ uuid: UUID }, NOW).intervalSeconds, 60);
+});
+
+test('configuration validates finite nonnegative intervals and integer attempt limits', () => {
+  for (const intervalSeconds of [-1, -0.1, 86401, Infinity, -Infinity, NaN, 'NaN']) {
     assert.throws(() => normalizeConfig({ uuid: UUID, intervalSeconds }, NOW));
   }
   for (const maxAttempts of [-1, 1.5, 100001, Infinity]) {
@@ -187,6 +194,11 @@ test('error messages remove auth and push credentials before display', () => {
 });
 
 test('transient retries back off while respecting the chosen interval', () => {
+  assert.equal(retryDelaySeconds(0, 0), 0);
+  assert.equal(retryDelaySeconds(0.1, 0), 0.1);
+  assert.equal(retryDelaySeconds(1, 1), 2);
+  assert.equal(retryDelaySeconds(0, 1, 120), 120);
+  assert.equal(retryDelaySeconds(undefined, 0), 60);
   assert.equal(retryDelaySeconds(60, 0), 60);
   assert.equal(retryDelaySeconds(60, 1), 120);
   assert.equal(retryDelaySeconds(60, 2), 240);

@@ -1,4 +1,3 @@
-export const MIN_INTERVAL_SECONDS = 30;
 export const MAX_INTERVAL_SECONDS = 86400;
 export const ACTIVE_STATUSES = new Set(["scheduled", "running", "retrying"]);
 
@@ -29,8 +28,8 @@ export function normalizeConfig(input, now = Date.now()) {
   const uuid = String(input.uuid || "").trim();
   if (!instanceType(uuid)) throw new Error("请输入有效的普通或 Pro 实例 ID");
   const intervalSeconds = Number(input.intervalSeconds ?? 60);
-  if (!Number.isInteger(intervalSeconds) || intervalSeconds < MIN_INTERVAL_SECONDS || intervalSeconds > MAX_INTERVAL_SECONDS) {
-    throw new Error("轮询间隔须为 30–86400 秒之间的整数");
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds < 0 || intervalSeconds > MAX_INTERVAL_SECONDS) {
+    throw new Error("轮询间隔须为 0–86400 秒之间的数字，支持小数");
   }
   const maxAttempts = Number(input.maxAttempts ?? 0);
   if (!Number.isInteger(maxAttempts) || maxAttempts < 0 || maxAttempts > 100000) throw new Error("最大次数须为 0–100000 的整数，0 表示不限");
@@ -93,7 +92,8 @@ export function classifyResponse(httpStatus, body, { uuid } = {}) {
 }
 
 export function retryDelaySeconds(intervalSeconds, consecutiveFailures = 0, retryAfterSeconds = 0) {
-  const base = Math.max(MIN_INTERVAL_SECONDS, Number(intervalSeconds) || 60);
+  const configured = Number(intervalSeconds ?? 60);
+  const base = Number.isFinite(configured) && configured >= 0 ? configured : 60;
   const exponential = Math.min(900, base * 2 ** Math.min(5, Math.max(0, consecutiveFailures)));
   return Math.max(base, exponential, Math.min(86400, Math.max(0, Number(retryAfterSeconds) || 0)));
 }

@@ -96,8 +96,8 @@ window.fetch = async (input, init = {}) => {
 window.XMLHttpRequest = class { constructor() { throw new Error('离线演示禁止 XMLHttpRequest'); } };
 history.replaceState(null, '', '/console/instance/list?offline-preview=1');
 const [panelMarkup, panelCss] = await Promise.all([
-  fetch('/src/panel.html?v=1.2.1', { cache: 'no-store' }).then(response => response.text()),
-  fetch('/src/panel.css?v=1.2.1', { cache: 'no-store' }).then(response => response.text()),
+  fetch('/src/panel.html?v=1.2.2', { cache: 'no-store' }).then(response => response.text()),
+  fetch('/src/panel.css?v=1.2.2', { cache: 'no-store' }).then(response => response.text()),
 ]);
 const expected = [
   { uuid: 'pro-demo0001', name: 'Demo GPU A', status: '已关机', canPowerOn: null },
@@ -246,6 +246,14 @@ async function runChecks() {
     const box = root.querySelector('.adls-dialog').getBoundingClientRect();
     check('面板宽高在视口内，最大 450×740', box.width <= 451 && box.height <= 741 && box.left >= 0 && box.right <= innerWidth + 1 && box.bottom <= innerHeight + 1);
     advanced.open = true;
+    for (const intervalSeconds of [0, 0.1, 1]) {
+      root.querySelector('#interval').value = String(intervalSeconds);
+      const form = root.querySelector('#preferences-form');
+      const valid = form.checkValidity();
+      form.requestSubmit(root.querySelector('#save-preferences'));
+      await pause(80);
+      check(`原生表单允许保存 ${intervalSeconds} 秒间隔`, valid && state.preferences.intervalSeconds === intervalSeconds);
+    }
     root.querySelector('#interval').value = '90';
     root.querySelector('#max-attempts').value = '4';
     root.querySelector('#start-at').value = '';

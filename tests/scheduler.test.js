@@ -146,11 +146,57 @@ test('manual stop cancels a standard GPU-shortage retry without sending another 
   h.destroy();
 });
 
+test('both instance types retry at the chosen high frequency and stop on request', async (t) => {
+  for (const uuid of [UUID, 'demo000001-00000001']) {
+    for (const intervalSeconds of [0, 0.1, 1]) await t.test(`${uuid}: ${intervalSeconds} seconds`, async () => {
+      const h = await harness({ request: async () => stock() });
+      const saved = await h.command('SET_PREFERENCES', { config: { intervalSeconds } });
+      assert.equal(saved.ok, true, saved.error);
+      assert.equal(h.persisted().preferences.intervalSeconds, intervalSeconds);
+      const started = await h.command('START_JOB', { config: { uuid } });
+      assert.equal(started.ok, true, started.error);
+      assert.equal(started.snapshot.jobs[0].intervalSeconds, intervalSeconds);
+      await h.runNext();
+      const firstFinishedAt = h.now();
+      assert.equal((await h.state()).jobs[0].nextRunAt, firstFinishedAt + intervalSeconds * 1000);
+      await h.runNext();
+      assert.equal(h.now() - firstFinishedAt, intervalSeconds * 1000);
+      assert.equal(h.calls.length, 2);
+      assert.equal((await h.command('STOP_JOB', { uuid })).ok, true);
+      assert.equal(h.timers.size, 0);
+      h.destroy();
+      const restored = await harness({ saved: h.persisted() });
+      assert.equal((await restored.state()).preferences.intervalSeconds, intervalSeconds);
+      restored.destroy();
+    });
+  }
+});
+
+test('zero interval waits for the current response and still respects Retry-After', async () => {
+  let finish;
+  const h = await harness({ request: () => new Promise(resolve => { finish = resolve; }) });
+  await h.start({ intervalSeconds: 0 });
+  await h.runNext();
+  assert.equal(h.calls.length, 1);
+  assert.equal((await h.state()).jobs[0].status, 'running');
+  assert.equal(h.timers.size, 1, 'Only the request timeout is pending while awaiting the response');
+  finish(response(429, { msg: 'too many requests' }, '120'));
+  await h.settle();
+  const job = (await h.state()).jobs[0];
+  assert.equal(job.status, 'retrying');
+  assert.equal(job.nextRunAt, h.now() + 120000);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.timers.size, 1);
+  await h.command('STOP_JOB', { uuid: UUID });
+  assert.equal(h.timers.size, 0);
+  h.destroy();
+});
+
 test('scheduler needs auth, validates config and sends no requests before timer fires', async () => {
   const h = await harness({ initialCredentials: { token: '' } });
   assert.equal((await h.command('START_JOB', { config: { uuid: UUID } })).ok, false);
   h.credentials({ token: jwt(), appVersion: 'v6.51.0' });
-  assert.equal((await h.command('START_JOB', { config: { uuid: UUID, intervalSeconds: 1 } })).ok, false);
+  assert.equal((await h.command('START_JOB', { config: { uuid: UUID, intervalSeconds: -1 } })).ok, false);
   await h.start();
   assert.equal(h.calls.length, 0);
   h.destroy();
@@ -425,7 +471,7 @@ test('invalid preferences are rejected without changing saved defaults', async (
   const h = await harness();
   const previous = (await h.state()).preferences;
   for (const config of [
-    { intervalSeconds: 1, maxAttempts: 0, startAt: null },
+    { intervalSeconds: -1, maxAttempts: 0, startAt: null },
     { intervalSeconds: 60, maxAttempts: -1, startAt: null },
     { intervalSeconds: 60, maxAttempts: 0, startAt: NOW - 120000 },
     { intervalSeconds: 60, maxAttempts: 0, startAt: 'invalid' },
