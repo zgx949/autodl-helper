@@ -2,6 +2,17 @@ export const MIN_INTERVAL_SECONDS = 30;
 export const MAX_INTERVAL_SECONDS = 86400;
 export const ACTIVE_STATUSES = new Set(["scheduled", "running", "retrying"]);
 
+export function instanceType(uuid) {
+  if (typeof uuid !== "string") return null;
+  if (/^pro-[a-z0-9]{4,64}$/.test(uuid)) return "pro";
+  if (/^[a-z0-9]{10}-[a-f0-9]{8}$/.test(uuid)) return "standard";
+  return null;
+}
+
+export function instanceConsoleUrl(uuid) {
+  return `https://www.autodl.com/console/instance/${instanceType(uuid) === "pro" ? "pro/" : ""}list`;
+}
+
 // A task result describes a past request, not the instance's current power state.
 // Only current page evidence can make an otherwise idle instance unavailable.
 export function instanceCanStart(instance) {
@@ -16,7 +27,7 @@ export function instanceCanStart(instance) {
 export function normalizeConfig(input, now = Date.now()) {
   if (!input || typeof input !== "object") throw new Error("任务配置无效");
   const uuid = String(input.uuid || "").trim();
-  if (!/^pro-[a-z0-9]{4,64}$/.test(uuid)) throw new Error("请输入有效的实例 ID，例如 pro-xxxxxxxxxxxx");
+  if (!instanceType(uuid)) throw new Error("请输入有效的普通或 Pro 实例 ID");
   const intervalSeconds = Number(input.intervalSeconds ?? 60);
   if (!Number.isInteger(intervalSeconds) || intervalSeconds < MIN_INTERVAL_SECONDS || intervalSeconds > MAX_INTERVAL_SECONDS) {
     throw new Error("轮询间隔须为 30–86400 秒之间的整数");
@@ -64,7 +75,7 @@ export function classifyResponse(httpStatus, body) {
   if (httpStatus < 200 || httpStatus >= 300) return { kind: "error", message: `请求失败（HTTP ${httpStatus}）${message ? `：${message}` : ""}` };
   if (!body || typeof body !== "object" || Array.isArray(body)) return { kind: "error", message: "接口返回格式异常，请到控制台确认实例状态" };
   if (code === "Success") return { kind: "success", message: "开机请求已受理，请到 AutoDL 控制台确认运行状态" };
-  if (code === "InternalError" && /当前算力规格暂无库存/.test(message)) return { kind: "stock", message };
+  if (code === "InternalError" && /(?:当前算力规格暂无库存|(?:空闲|可用)?\s*GPU\s*(?:数量|资源)?不足)/i.test(message)) return { kind: "stock", message };
   return { kind: "error", message: message || `接口返回未识别的结果（${code || "无状态码"}），已停止任务` };
 }
 

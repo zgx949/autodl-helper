@@ -1,5 +1,17 @@
 import { createScheduler } from "./scheduler.js";
 import { installPage } from "./page.js";
+import { instanceType, instanceConsoleUrl } from "./core.js";
+
+export function requestInstancePowerOn({ uuid, token, appVersion, signal }) {
+  const type = instanceType(uuid);
+  if (!type) throw new Error("请输入有效的普通或 Pro 实例 ID");
+  const headers = { accept: "application/json", "content-type": "application/json;charset=UTF-8", authorization: token };
+  if (appVersion) headers.appversion = appVersion;
+  return fetch(`https://www.autodl.com/api/v1/instance/${type === "pro" ? "pro/" : ""}power_on`, {
+    method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers,
+    body: JSON.stringify({ instance_uuid: uuid, payload: "" }), signal
+  });
+}
 
 export function readPageCredentials() {
   let token = "";
@@ -13,7 +25,7 @@ export function readPageCredentials() {
 
 export async function bootstrap(panelMarkup, panelCss) {
   const STORAGE_KEY = "autodl-scheduler:state:v1";
-  const CONSOLE_URL = "https://www.autodl.com/console/instance/pro/list";
+  const currentConsoleUrl = () => `https://www.autodl.com/console/instance/${location.pathname.startsWith("/console/instance/pro/") ? "pro/" : ""}list`;
   const storage = {
     get: async () => GM_getValue(STORAGE_KEY, null),
     set: async value => { GM_setValue(STORAGE_KEY, value); }
@@ -29,16 +41,9 @@ export async function bootstrap(panelMarkup, panelCss) {
     scheduler = createScheduler({
       storage, getCredentials: readPageCredentials, canRun: () => isLeader && !stopped,
       blockedReason: reason,
-      openConsole: () => GM_openInTab(CONSOLE_URL, { active: true, insert: true }),
-      requestPowerOn: ({ uuid, token, appVersion, signal }) => {
-        const headers = { accept: "application/json", "content-type": "application/json;charset=UTF-8", authorization: token };
-        if (appVersion) headers.appversion = appVersion;
-        return fetch("https://www.autodl.com/api/v1/instance/pro/power_on", {
-          method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers,
-          body: JSON.stringify({ instance_uuid: uuid, payload: "" }), signal
-        });
-      },
-      notify: (title, text) => GM_notification({ title, text, timeout: 15000, onclick: () => GM_openInTab(CONSOLE_URL, { active: true }) }),
+      openConsole: () => GM_openInTab(currentConsoleUrl(), { active: true, insert: true }),
+      requestPowerOn: requestInstancePowerOn,
+      notify: (title, text, uuid) => GM_notification({ title, text, timeout: 15000, onclick: () => GM_openInTab(instanceConsoleUrl(uuid), { active: true }) }),
       sendPush: (token, message) => new Promise((resolve, reject) => {
         GM_xmlhttpRequest({
           method: "GET",

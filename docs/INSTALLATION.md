@@ -48,7 +48,7 @@ AutoDL Helper 是运行在 AutoDL 网页中的游猴脚本。日常使用只需�
 ## 3. 确认安装成功
 
 1. 登录 [AutoDL](https://www.autodl.com/)。
-2. 打开 [个人账户 Pro 实例列表](https://www.autodl.com/console/instance/pro/list)。
+2. 打开 [个人账户普通实例列表](https://www.autodl.com/console/instance/list)或 [Pro 实例列表](https://www.autodl.com/console/instance/pro/list)。
 3. 刷新页面，等待实例列表加载。
 4. 确认实例操作区域出现新增的“抢机”按钮，右下角出现“抢机任务”。
 

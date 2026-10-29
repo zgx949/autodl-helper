@@ -94,14 +94,14 @@ window.fetch = async (input, init = {}) => {
   return nativeFetch(input, init);
 };
 window.XMLHttpRequest = class { constructor() { throw new Error('离线演示禁止 XMLHttpRequest'); } };
-history.replaceState(null, '', '/console/instance/pro/list?offline-preview=1');
+history.replaceState(null, '', '/console/instance/list?offline-preview=1');
 const [panelMarkup, panelCss] = await Promise.all([
-  fetch('/src/panel.html?v=1.1.1', { cache: 'no-store' }).then(response => response.text()),
-  fetch('/src/panel.css?v=1.1.1', { cache: 'no-store' }).then(response => response.text()),
+  fetch('/src/panel.html?v=1.2.0', { cache: 'no-store' }).then(response => response.text()),
+  fetch('/src/panel.css?v=1.2.0', { cache: 'no-store' }).then(response => response.text()),
 ]);
 const expected = [
   { uuid: 'pro-demo0001', name: 'Demo GPU A', status: '已关机', canPowerOn: null },
-  { uuid: 'pro-demo0002', name: 'Demo GPU B', status: '已关机', canPowerOn: null },
+  { uuid: 'demo000001-00000001', name: 'Demo GPU B', status: '已关机', canPowerOn: null },
 ];
 let syncCount = 0;
 let lastPageSync = null;
@@ -213,7 +213,7 @@ async function runChecks() {
     startCount = 0;
     destroyPage = installPage(scheduler, panelMarkup, panelCss);
     await pause(80);
-    check('合成示例识别出两条 Pro 实例和对应名称', JSON.stringify(lastPageSync?.instances) === JSON.stringify(expected));
+    check('合成示例识别出普通与 Pro 实例及对应名称', JSON.stringify(lastPageSync?.instances) === JSON.stringify(expected));
     check('两个实例行各注入一个按钮', rowButtons().length === 2);
     check('无任务时直接显示抢机入口且没有自动开机', rowButtons().every(item => item.textContent === '抢机') && state.jobs.length === 0 && startCount === 0);
     check('fixture 不含外链、事件属性或原站脚本', !document.querySelector('#fixture script, #fixture [src], #fixture [href]') &&
@@ -331,6 +331,31 @@ async function runChecks() {
     await pause(80);
     check('销毁后可重新安装并打开面板', rowButtons().length === 2 && !shadowRoot().querySelector('.adls-backdrop').hidden);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    const standardControls = rowButtons()[1].closest('[data-autodl-scheduler-controls="userscript"]');
+    standardControls.querySelector('[data-autodl-scheduler-stop="userscript"]').click();
+    await pause(80);
+    const standardStatus = rowButtons()[1].closest('.el-table__row').querySelector('.status');
+    const beforeStandardCheck = startCount;
+    standardStatus.textContent = '开机中';
+    await pause(600);
+    rowButtons()[1].click();
+    check('普通实例开机中禁止重复抢机', rowButtons()[1].disabled && startCount === beforeStandardCheck);
+    standardStatus.textContent = '已关机';
+    await pause(600);
+    rowButtons()[1].click();
+    await pause(80);
+    check('普通实例关机后可重新抢机并保留实例名称', startCount === beforeStandardCheck + 1 && state.jobs.some(job => job.uuid === expected[1].uuid && job.name === expected[1].name && job.enabled));
+    const panelRoot = shadowRoot();
+    panelRoot.querySelector('.adls-launcher').click();
+    await pause(80);
+    panelRoot.querySelector('#advanced-settings').open = true;
+    panelRoot.querySelector('#instance-uuid').value = 'demo000002-00000002';
+    panelRoot.querySelector('#manual-start').closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await pause(80);
+    check('高级设置支持手动添加普通实例 ID', state.jobs.some(job => job.uuid === 'demo000002-00000002' && job.enabled));
+    state.jobs = state.jobs.filter(job => job.uuid !== 'demo000002-00000002');
+    panelRoot.querySelector('#advanced-settings').open = false;
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     // Leave a completed historical request on an off instance for the release screenshot.
     await setEndedJob('success');
   } catch (error) {
@@ -365,7 +390,7 @@ def build_preview():
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'">
 <title>AutoDL Helper · 离线演示</title><style>{STYLE}</style></head>
 <body><header class="demo-banner">AutoDL Helper · 离线演示<small>实例信息全部为虚构示例。任务、库存与通知均为本地模拟，不发送开机请求。</small></header>
-<main class="demo-main"><div class="demo-title"><div><h1>AutoDL Pro · 实例列表</h1><p>点击实例行的“抢机”即可开始；所有操作仅在本地模拟。</p></div><div class="demo-controls"><button id="open-demo" type="button">打开演示面板</button><button id="run-checks" type="button">重新运行 DOM 检查</button></div></div>
+<main class="demo-main"><div class="demo-title"><div><h1>AutoDL · 普通与 Pro 实例列表</h1><p>点击实例行的“抢机”即可开始；所有操作仅在本地模拟。</p></div><div class="demo-controls"><button id="open-demo" type="button">打开演示面板</button><button id="run-checks" type="button">重新运行 DOM 检查</button></div></div>
 <section class="demo-card" id="fixture">{safe_table}</section>
 <details class="demo-card"><summary>离线 DOM / UI 检查 · <span id="check-summary">正在检查…</span></summary><ol id="assertions" class="checks"></ol></details>
 <p class="demo-note">预览读取 <code>/src/panel.js</code>、<code>/src/panel.css</code>、<code>/src/page.js</code>，不会导入真实调度器。</p></main>
@@ -382,7 +407,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
-        if path in ("/", "/console/instance/pro/list"):
+        if path in ("/", "/console/instance/list", "/console/instance/pro/list"):
             self.path = "/preview/index.html"
         elif path not in {"/preview/index.html", "/src/core.js", "/src/page.js", "/src/panel.js", "/src/panel.html", "/src/panel.css"}:
             self.send_error(404, "Not a preview resource")

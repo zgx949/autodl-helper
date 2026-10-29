@@ -66,6 +66,43 @@ async function harness({ request, saved = null, canRun = () => true, initialCred
 const response = (status, body, retryAfter = null) => ({ status, headers: { get: () => retryAfter }, async json() { return body; } });
 const stock = () => response(200, { code: 'InternalError', msg: '当前算力规格暂无库存, 请修改配置或稍等再试' });
 
+test('standard instances sync, retry GPU shortages and finish without affecting a Pro task', async () => {
+  const uuid = 'demo000001-00000001';
+  let attempts = 0;
+  const h = await harness({ request: async () => ++attempts === 1
+    ? response(200, { code: 'InternalError', msg: '主机的空闲GPU不足，请稍后再试' })
+    : response(200, { code: 'Success' }) });
+  await h.syncPage({ token: jwt(), instances: [
+    { uuid, name: 'Standard demo', status: '已关机', canPowerOn: true },
+    { uuid: UUID, name: 'Pro demo', status: '已关机', canPowerOn: true },
+    { uuid: 'invalid', status: '已关机' },
+  ] });
+  assert.equal((await h.state()).instances.length, 2);
+  await h.start({ startAt: NOW + 3600000 });
+  await h.start({ uuid });
+  let state = await h.runNext();
+  const job = state.jobs.find(job => job.uuid === uuid);
+  assert.equal(job.name, 'Standard demo');
+  assert.equal(job.status, 'retrying');
+  assert.equal(job.nextRunAt, NOW + 60000);
+  state = await h.runNext();
+  assert.equal(state.jobs.find(job => job.uuid === uuid).status, 'success');
+  assert.ok(state.jobs.find(job => job.uuid === UUID).enabled);
+  assert.deepEqual(h.calls.map(call => call.uuid), [uuid, uuid]);
+  assert.equal(h.notices[0][2], uuid, 'Notification must retain the target instance type');
+  h.destroy();
+});
+
+test('a standard task stops before requesting if the page reports it already running', async () => {
+  const uuid = 'demo000001-00000001';
+  const h = await harness();
+  await h.start({ uuid });
+  await h.syncPage({ token: jwt(), instances: [{ uuid, status: '运行中', canPowerOn: false }] });
+  assert.equal((await h.runNext()).jobs[0].status, 'stopped');
+  assert.equal(h.calls.length, 0);
+  h.destroy();
+});
+
 test('scheduler needs auth, validates config and sends no requests before timer fires', async () => {
   const h = await harness({ initialCredentials: { token: '' } });
   assert.equal((await h.command('START_JOB', { config: { uuid: UUID } })).ok, false);

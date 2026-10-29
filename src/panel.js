@@ -1,4 +1,4 @@
-import { instanceCanStart } from "./core.js";
+import { instanceCanStart, instanceType } from "./core.js";
 
 export function createPanel(container, scheduler, { initialUuid = '', onClose = () => {}, beforeStart = async () => {} } = {}) {
   const $ = id => container.querySelector(`#${id}`);
@@ -229,7 +229,7 @@ export function createPanel(container, scheduler, { initialUuid = '', onClose = 
     event.preventDefault();
     void perform($('manual-start'), async () => {
       const uuid = $('instance-uuid').value.trim();
-      if (!/^pro-[a-z0-9]+$/i.test(uuid)) throw new Error('请输入有效的 Pro 实例 ID');
+      if (!instanceType(uuid)) throw new Error('请输入有效的普通或 Pro 实例 ID');
       await startInstance({ uuid });
       $('instance-uuid').value = '';
     });

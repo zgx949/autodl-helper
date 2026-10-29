@@ -6,7 +6,7 @@
 
 先阅读 [README](README.md)、[使用指南](docs/USAGE.md) 和 [SECURITY.md](SECURITY.md)。较大的功能变更，建议先通过 [Issue](https://github.com/zgx949/autodl-helper/issues) 说明使用场景和预期行为，避免重复工作。
 
-项目当前聚焦个人账户已有 Pro 实例的开机重试。提交涉及新建实例、其他账户接口或新的外部服务时，请明确描述接口和权限变化。
+项目当前聚焦个人账户已有普通与 Pro 实例的开机重试。提交涉及新建实例、其他账户接口或新的外部服务时，请明确描述接口和权限变化。
 
 ## 开发环境
 

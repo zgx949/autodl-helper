@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeConfig, parseAuthToken, classifyResponse, retryDelaySeconds,
-  sanitizeMessage, parseRetryAfter, instanceCanStart,
+  sanitizeMessage, parseRetryAfter, instanceCanStart, instanceType, instanceConsoleUrl,
 } from '../src/core.js';
 
 const NOW = Date.parse('2026-10-28T12:00:00Z');
@@ -32,6 +32,16 @@ test('configuration defaults to an immediate 60-second task', () => {
   });
 });
 
+test('standard and Pro IDs share validation and select their own console', () => {
+  for (const uuid of ['demo000001-00000001', 'demo000002-abcdef12']) {
+    assert.equal(instanceType(uuid), 'standard');
+    assert.equal(normalizeConfig({ uuid: ` ${uuid} ` }, NOW).uuid, uuid);
+    assert.equal(instanceConsoleUrl(uuid), 'https://www.autodl.com/console/instance/list');
+  }
+  assert.equal(instanceType(UUID), 'pro');
+  assert.equal(instanceConsoleUrl(UUID), 'https://www.autodl.com/console/instance/pro/list');
+});
+
 test('configuration accepts numeric form values and trims names', () => {
   assert.deepEqual(normalizeConfig({
     uuid: ` ${UUID} `, name: ' Workstation ', intervalSeconds: '30', maxAttempts: '12', startAt: NOW + 60000,
@@ -39,7 +49,9 @@ test('configuration accepts numeric form values and trims names', () => {
 });
 
 test('configuration refuses malformed or unrelated instance identifiers', () => {
-  for (const uuid of ['', 'abc', 'pro-a', 'pro-foo/bar', 'https://example.com', 'pro-foo\nbar']) {
+  for (const uuid of ['', 'abc', 'pro-a', 'pro-foo/bar', 'https://example.com', 'pro-foo\nbar',
+    'demo00001-00000001', 'demo000001-0000000z', 'demo000001-00000001/extra', 'demo000001-00000001\nextra']) {
+    assert.equal(instanceType(uuid), null);
     assert.throws(() => normalizeConfig({ uuid }, NOW));
   }
 });
@@ -96,6 +108,16 @@ test('known no-inventory response retries instead of succeeding', () => {
     code: 'InternalError', msg: '当前算力规格暂无库存, 请修改配置或稍等再试',
   }).kind, 'stock');
   assert.equal(classifyResponse(200, { code: 'Other', msg: '当前算力规格暂无库存' }).kind, 'error');
+});
+
+test('explicit standard GPU shortage retries without treating other failures as stock', () => {
+  for (const msg of ['主机的空闲GPU不足，请稍后再试', 'GPU资源不足', '可用 GPU 数量不足']) {
+    assert.equal(classifyResponse(200, { code: 'InternalError', msg }).kind, 'stock');
+    assert.equal(classifyResponse(200, { code: 'Other', msg }).kind, 'error');
+  }
+  for (const msg of ['余额不足', '实例已到期，请续费', '主机维护中', 'GPU故障', '资源不足']) {
+    assert.equal(classifyResponse(200, { code: 'InternalError', msg }).kind, 'error');
+  }
 });
 
 test('auth rejection always stops and takes precedence over misleading body', () => {

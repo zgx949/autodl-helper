@@ -1,5 +1,5 @@
 import { createPanel } from "./panel.js";
-import { instanceCanStart } from "./core.js";
+import { instanceCanStart, instanceType } from "./core.js";
 
 export function installPage(scheduler, panelMarkup, panelCss) {
   const hostId = 'autodl-scheduler-host';
@@ -282,7 +282,7 @@ export function installPage(scheduler, panelMarkup, panelCss) {
       const firstCell = row.querySelector('td:first-child');
       if (!firstCell) continue;
       const uuidElement = [...firstCell.querySelectorAll('div')]
-        .find((element) => /^pro-[a-z0-9]+$/i.test(element.textContent.trim()));
+        .find((element) => instanceType(element.textContent.trim()));
       if (!uuidElement) continue;
       const uuid = uuidElement.textContent.trim();
       const name = (uuidElement.nextElementSibling?.querySelector('span:not(.iconfont)')?.textContent || '').trim();

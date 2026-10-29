@@ -8,7 +8,7 @@
 
 1. Tampermonkey 和 AutoDL Helper 脚本都已启用。
 2. Chrome 扩展详情中已按要求允许用户脚本运行，并允许游猴访问 AutoDL。
-3. 当前页面是 `https://www.autodl.com/console/…`，实例列表使用[个人账户 Pro 页面](https://www.autodl.com/console/instance/pro/list)。
+3. 当前页面是 `https://www.autodl.com/console/…`，实例列表使用[个人账户普通页面](https://www.autodl.com/console/instance/list)或 [Pro 页面](https://www.autodl.com/console/instance/pro/list)。
 4. 安装的是完整 `autodl-scheduler.user.js`，包括顶部元数据，没有把 `src/` 模块单独复制进去。
 5. 安装或更新脚本后已刷新 AutoDL 页面，且实例列表已加载。
 6. 没有同时启用旧副本或其他会改动实例表格的同类脚本。
@@ -41,7 +41,7 @@
 
 ## 为什么没有提供购买或新建实例？
 
-当前版本针对已有个人账户 Pro 实例的开机接口，只做库存不足后的重复尝试。创建、租用、释放、关机以及子账户接口属于不同操作流程，不在当前支持范围内。
+当前版本针对已有个人账户普通与 Pro 实例的开机接口，只做库存不足后的重复尝试。创建、租用、释放、关机以及子账户接口属于不同操作流程，不在当前支持范围内。
 
 ## “开机已受理”之后，机器怎么还没运行？
 

@@ -1,4 +1,4 @@
-import { normalizeConfig, parseAuthToken, classifyResponse, retryDelaySeconds, parseRetryAfter, sanitizeMessage, instanceCanStart } from "./core.js";
+import { normalizeConfig, parseAuthToken, classifyResponse, retryDelaySeconds, parseRetryAfter, sanitizeMessage, instanceCanStart, instanceType, instanceConsoleUrl } from "./core.js";
 
 export function createScheduler({
   storage,
@@ -6,7 +6,7 @@ export function createScheduler({
   requestPowerOn,
   sendPush = async () => {},
   notify = async () => {},
-  openConsole = () => window.open("https://www.autodl.com/console/instance/pro/list", "_blank", "noopener"),
+  openConsole = uuid => window.open(instanceConsoleUrl(uuid), "_blank", "noopener"),
   canRun = () => true,
   blockedReason = "另一个 AutoDL 标签页正在管理任务，请切回原页面；若原页面已关闭，请刷新本页",
   now = () => Date.now(),
@@ -130,7 +130,7 @@ export function createScheduler({
   })();
 
   async function report(title, message, uuid) {
-    try { await notify(title, safe(message)); }
+    try { await notify(title, safe(message), uuid); }
     catch {
       await locked(async () => { log("warn", "系统通知未发送成功，请在面板查看任务结果", uuid); await persist(); });
     }
@@ -245,7 +245,7 @@ export function createScheduler({
       await updateAuth(payload);
       const byId = new Map(state.instances.map(item => [item.uuid, item]));
       for (const item of Array.isArray(payload.instances) ? payload.instances.slice(0, 200) : []) {
-        if (!/^pro-[a-z0-9]{4,64}$/.test(item?.uuid || "")) continue;
+        if (!instanceType(item?.uuid)) continue;
         byId.set(item.uuid, { uuid: item.uuid, name: String(item.name || item.uuid).slice(0, 80), status: String(item.status || "").slice(0, 40),
           canPowerOn: typeof item.canPowerOn === "boolean" ? item.canPowerOn : null });
       }
@@ -271,7 +271,7 @@ export function createScheduler({
             const config = normalizeConfig({ ...currentPreferences(), ...payload.config }, now());
             await updateAuth(await getCredentials());
             if (!hasAuth()) throw new Error("请先登录 AutoDL 并刷新实例页面");
-            if (auth.isSubUser) throw new Error("当前脚本支持个人账户 Pro 实例，请切换个人账户后重试");
+            if (auth.isSubUser) throw new Error("当前脚本支持个人账户实例，请切换个人账户后重试");
             let job = state.jobs.find(item => item.uuid === config.uuid);
             if (job?.enabled) throw new Error("该实例任务已运行，请先停止后修改");
             if (state.jobs.filter(item => item.enabled).length >= 20) throw new Error("最多同时运行 20 个实例任务");

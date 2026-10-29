@@ -1,7 +1,7 @@
 {
   "name": "autodl-helper",
-  "version": "1.1.1",
-  "description": "AutoDL Pro 实例一键抢机、自动重试与行内进度的 Tampermonkey 用户脚本。",
+  "version": "1.2.0",
+  "description": "AutoDL 普通与 Pro 实例一键抢机、自动重试与行内进度的 Tampermonkey 用户脚本。",
   "private": true,
   "type": "module",
   "license": "MIT",

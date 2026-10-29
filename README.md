@@ -36,7 +36,7 @@
 
 1. 在 Chrome 中安装并启用 [Tampermonkey](https://www.tampermonkey.net/)，按需在扩展详情中开启“允许用户脚本”。详见[官方说明](https://www.tampermonkey.net/faq.php#Q209)。
 2. 点击 **[安装 AutoDL Helper](https://raw.githubusercontent.com/zgx949/autodl-helper/main/autodl-scheduler.user.js)**，在游猴安装页确认安装。如果浏览器只显示源码，按[手动安装步骤](docs/INSTALLATION.md#方式二手动复制安装)粘贴保存。
-3. 登录并打开 [AutoDL Pro 实例列表](https://www.autodl.com/console/instance/pro/list)，刷新页面。
+3. 登录并打开 [AutoDL 普通实例列表](https://www.autodl.com/console/instance/list)或 [Pro 实例列表](https://www.autodl.com/console/instance/pro/list)，刷新页面。
 4. 在目标实例行点击 **“抢机”**。无需填写内容，任务立即开始；页面会显示次数和倒计时。
 5. 在原实例行点击 **“停止”**，或通过右下角 **“抢机任务”** 查看和管理全部任务。任务结束后可点 **“删除记录”**；实例关机后可直接重新抢机，无需先删历史记录。
 
@@ -46,7 +46,7 @@
 
 | 项目 | 当前行为 |
 | --- | --- |
-| 支持范围 | 个人账户下已有 **Pro 实例的开机重试**；不创建或租用新实例，暂不支持子账户 |
+| 支持范围 | 个人账户下已有 **普通与 Pro 实例的开机重试**；不创建或租用新实例，暂不支持子账户 |
 | 默认方式 | 立即尝试；库存不足时每 60 秒重试；次数不限 |
 | 页面运行 | 保持执行任务的 AutoDL 标签页打开；电脑休眠会暂停执行，后台节流可能延迟重试 |
 | 刷新与重启 | 原运行任务会暂停，确认后手动重新启动；不会静默恢复开机请求 |
