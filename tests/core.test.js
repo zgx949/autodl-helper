@@ -120,6 +120,43 @@ test('explicit standard GPU shortage retries without treating other failures as 
   }
 });
 
+test('standard GPU shortage messages retry across business codes and wording', () => {
+  const options = { uuid: 'demo000001-00000001' };
+  for (const code of ['InternalError', 'Error', 'Other', 'GPUNotEnough']) {
+    for (const msg of ['GPU不足', 'GPU 资源不足', '当前主机空闲GPU数量不足', 'GPU卡数不够',
+      '当前机器没有足够的空闲 GPU，请稍后再试', '暂无可用GPU', '无空闲 GPU', '显卡数量不足', '空闲卡数不足',
+      'GPU可用卡数量不足', 'GPU资源不充足', 'GPU个数不足', 'GPU张数不足', '当前暂无库存', '库存不足，请稍后再试', '没有足够数量的GPU',
+      'Insufficient available GPUs', 'Not enough free GPUs']) {
+      assert.equal(classifyResponse(200, { code, msg }, options).kind, 'stock', `${code}: ${msg}`);
+    }
+  }
+  assert.equal(classifyResponse(200, { code: 'Other', message: 'GPU不足' }, options).kind, 'stock');
+  assert.equal(classifyResponse(200, { code: 'Other', msg: 'GPU不足' }, { uuid: UUID }).kind, 'error', 'Pro rules stay unchanged');
+});
+
+test('standard stock detection keeps authentication and actionable failures terminal', () => {
+  const options = { uuid: 'demo000001-00000001' };
+  for (const [code, msg, kind] of [
+    ['TokenExpired', 'GPU不足', 'auth'],
+    ['TORecharge', 'GPU不足', 'error'],
+    ['TORealName', 'GPU不足', 'error'],
+    ['InvalidParameter', 'GPU不足', 'error'],
+    ['Other', '余额不足，GPU不足', 'error'],
+    ['InternalError', '余额不足，GPU不足', 'error'],
+    ['Other', '实例已到期，GPU不足', 'error'],
+    ['Other', '没有权限，GPU不足', 'error'],
+    ['Other', 'GPU故障', 'error'],
+    ['Other', 'GPU驱动版本不足', 'error'],
+    ['Other', '没有GPU驱动', 'error'],
+    ['Other', '没有GPU访问权限', 'error'],
+    ['Other', '显存不足', 'error'],
+    ['Other', '资源不足', 'error'],
+    ['Other', '未知错误', 'error'],
+  ]) assert.equal(classifyResponse(200, { code, msg }, options).kind, kind, `${code}: ${msg}`);
+  assert.equal(classifyResponse(403, { code: 'Other', msg: 'GPU不足' }, options).kind, 'auth');
+  assert.equal(classifyResponse(200, { code: 'Success' }, options).kind, 'success');
+});
+
 test('auth rejection always stops and takes precedence over misleading body', () => {
   for (const status of [401, 403]) assert.equal(classifyResponse(status, { code: 'Success' }).kind, 'auth');
   assert.equal(classifyResponse(200, { code: 'AuthorizeFailed' }).kind, 'auth');

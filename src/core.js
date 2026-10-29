@@ -64,7 +64,18 @@ export function sanitizeMessage(value, secrets = []) {
     .replace(/SPT_[A-Za-z0-9_-]+/g, "[推送密钥已隐藏]").slice(0, 400);
 }
 
-export function classifyResponse(httpStatus, body) {
+function standardGpuShortage(code, message) {
+  const text = message.replace(/\s+/g, "");
+  // Standard instances can use a different business code from Pro. Only an
+  // explicit lack of GPU capacity is retryable; account/configuration errors
+  // still need intervention even if their message also mentions GPU capacity.
+  if (/^(?:TORecharge|TORealName|InvalidArgument|InvalidParameter|PermissionDenied|Forbidden)$/i.test(code) ||
+      /(?:余额不足|欠费|充值|实名认证|未实名|已到期|已过期|无权限|没有权限|权限不足|禁止开机|参数.{0,12}(?:错误|无效))/.test(text) ||
+      /(?:gpu|显卡).{0,12}(?:驱动|访问权限)/i.test(text)) return false;
+  return /(?:暂无库存|库存不足|(?:gpu|显卡|空闲卡|可用卡)(?:卡|卡数|个数|张数|数|数量|资源|空闲|可用|剩余|空余|总数|的){0,4}(?:不足|不够|不充足|无法满足|不能满足)|(?:没有|暂无|无|找不到)(?:足够(?:数量)?的?)?(?:空闲|可用|空余)?(?:gpu|显卡)|(?:not[ -]?enough|insufficient)(?:available|free|idle)?gpus?)/i.test(text);
+}
+
+export function classifyResponse(httpStatus, body, { uuid } = {}) {
   const code = String(body?.code ?? "");
   const message = sanitizeMessage(body?.msg || body?.message || "");
   if ([401, 403].includes(httpStatus) || /^(AuthorizeFailed|Unauthorized|TokenExpired|Unauthenticated)$/i.test(code)) {
@@ -75,7 +86,9 @@ export function classifyResponse(httpStatus, body) {
   if (httpStatus < 200 || httpStatus >= 300) return { kind: "error", message: `请求失败（HTTP ${httpStatus}）${message ? `：${message}` : ""}` };
   if (!body || typeof body !== "object" || Array.isArray(body)) return { kind: "error", message: "接口返回格式异常，请到控制台确认实例状态" };
   if (code === "Success") return { kind: "success", message: "开机请求已受理，请到 AutoDL 控制台确认运行状态" };
-  if (code === "InternalError" && /(?:当前算力规格暂无库存|(?:空闲|可用)?\s*GPU\s*(?:数量|资源)?不足)/i.test(message)) return { kind: "stock", message };
+  if (instanceType(uuid) === "standard") {
+    if (standardGpuShortage(code, message)) return { kind: "stock", message };
+  } else if (code === "InternalError" && /(?:当前算力规格暂无库存|(?:空闲|可用)?\s*GPU\s*(?:数量|资源)?不足)/i.test(message)) return { kind: "stock", message };
   return { kind: "error", message: message || `接口返回未识别的结果（${code || "无状态码"}），已停止任务` };
 }
 

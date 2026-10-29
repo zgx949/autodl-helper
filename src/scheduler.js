@@ -185,7 +185,7 @@ export function createScheduler({
       let body = null;
       try { body = await response.json(); } catch { /* A non-JSON response cannot count as success. */ }
       retryAfter = parseRetryAfter(response.headers?.get?.("retry-after"), now());
-      result = classifyResponse(response.status, body);
+      result = classifyResponse(response.status, body, { uuid });
       result.message = sanitizeMessage(result.message, [attempt.token, auth?.token, pushToken]);
     } catch {
       result = { kind: "error", message: "网络连接失败或请求超时，开机结果尚未确认；请到控制台确认状态后重新启动任务" };

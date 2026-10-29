@@ -103,6 +103,49 @@ test('a standard task stops before requesting if the page reports it already run
   h.destroy();
 });
 
+test('standard GPU shortages keep polling at a fixed interval beyond five attempts until success', async () => {
+  const uuid = 'demo000001-00000001';
+  let attempts = 0;
+  const h = await harness({ request: async () => ++attempts <= 8
+    ? response(200, { code: 'Other', msg: '当前机器没有足够的空闲GPU，请稍后再试' })
+    : response(200, { code: 'Success' }) });
+  await h.start({ uuid, intervalSeconds: 45 });
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    const job = (await h.runNext()).jobs[0];
+    assert.equal(job.enabled, true);
+    assert.equal(job.status, 'retrying');
+    assert.equal(job.attempts, attempt);
+    assert.equal(job.maxAttempts, 0);
+    assert.equal(job.consecutiveFailures, 0);
+    assert.equal(job.nextRunAt, h.now() + 45000);
+    assert.equal(h.notices.length, 0);
+  }
+  const job = (await h.runNext()).jobs[0];
+  assert.equal(job.status, 'success');
+  assert.equal(job.enabled, false);
+  assert.equal(h.calls.length, 9);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.notices.length, 1);
+  h.destroy();
+});
+
+test('manual stop cancels a standard GPU-shortage retry without sending another request', async () => {
+  const uuid = 'demo000001-00000001';
+  const h = await harness({ request: async () => response(200, { code: 'Other', msg: 'GPU不足' }) });
+  await h.start({ uuid });
+  assert.equal((await h.runNext()).jobs[0].status, 'retrying');
+  assert.equal(h.timers.size, 1);
+  const result = await h.command('STOP_JOB', { uuid });
+  assert.equal(result.ok, true);
+  assert.equal(result.snapshot.jobs[0].enabled, false);
+  assert.equal(result.snapshot.jobs[0].status, 'stopped');
+  h.advanceTime(3600000);
+  await h.settle();
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.timers.size, 0);
+  h.destroy();
+});
+
 test('scheduler needs auth, validates config and sends no requests before timer fires', async () => {
   const h = await harness({ initialCredentials: { token: '' } });
   assert.equal((await h.command('START_JOB', { config: { uuid: UUID } })).ok, false);
