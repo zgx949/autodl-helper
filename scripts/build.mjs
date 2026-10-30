@@ -25,7 +25,7 @@ const header = `// ==UserScript==
 // @connect      wxpusher.zjiecode.com
 // ==/UserScript==
 `;
-const sourceFiles = ['src/core.js', 'src/scheduler.js', 'src/panel.js', 'src/page.js', 'src/entry.js'];
+const sourceFiles = ['src/core.js', 'src/scheduler.js', 'src/tabs.js', 'src/panel.js', 'src/page.js', 'src/entry.js'];
 const parts = await Promise.all(sourceFiles.map(async path => {
   const source = (await read(path)).replace(/^import\s+[^\n]+\n/gm, '').replace(/^export\s+(?=(?:async\s+)?function|const|let|class)/gm, '');
   return `\n// Source: ${path}\n${source}`;

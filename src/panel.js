@@ -203,9 +203,9 @@ export function createPanel(container, scheduler, { initialUuid = '', onClose = 
     const available = auth.available && (!auth.expiresAt || Number(auth.expiresAt) > Date.now());
     $('auth-dot').className = `dot${available && !state.readOnly ? ' ready' : ''}`;
     $('auth-status').textContent = state.readOnly ? '当前标签页只读' : available ? '已连接 AutoDL' : '请先登录 AutoDL';
-    $('auth-detail').textContent = state.readOnly ? state.blockedReason || '请回到管理任务的标签页' : available ? '点击“抢机”即可自动等待库存' : '登录后刷新实例页面即可';
+    $('auth-detail').textContent = state.readOnly ? state.blockedReason || '请回到管理任务的标签页' : available ? state.connectionMode === 'remote' ? '已连接任务管理标签页，可在本页抢机、停止或删除记录' : '点击“抢机”即可自动等待库存' : '登录后刷新实例页面即可';
     $('active-count').textContent = `${(state.jobs || []).filter(job => job.enabled).length} 个进行中`;
-    $('push-status').textContent = state.pushConfigured ? '已配置，仅当前页面有效' : '未配置';
+    $('push-status').textContent = state.connectionMode === 'remote' ? '请在执行任务的标签页配置' : state.pushConfigured ? '已配置，仅当前页面有效' : '未配置';
     for (const id of mutationButtons) $(id).disabled = Boolean(state.readOnly);
     if (!preferencesLoaded && !preferencesDirty) fillPreferences(state.preferences);
     renderJobs(Array.isArray(state.jobs) ? state.jobs : []);

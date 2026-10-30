@@ -30,7 +30,8 @@ npm run validate
 | `src/scheduler.js` | 任务状态、定时调度、请求生命周期、默认设置和通知时机 |
 | `src/page.js` | 实例行识别、直接抢机入口、行内进度及页面挂载/销毁 |
 | `src/panel.*` | 任务面板、折叠高级设置和运行记录 |
-| `src/entry.js` | 游猴 API、存储、AutoDL 请求、WxPusher 适配和标签页锁 |
+| `src/tabs.js` | 标签页互斥、操作转发、通信超时及关闭后的接管 |
+| `src/entry.js` | 游猴 API、存储、AutoDL 请求、WxPusher 适配和启动 |
 | `scripts/build.mjs` | 将模块、HTML、CSS 合并为单文件游猴脚本 |
 | `scripts/check.mjs` | 检查构建产物、脚本元数据、语法、UI 引用和敏感信息 |
 | `scripts/preview.py` | 使用虚构页面和模拟接口生成、运行离线演示 |

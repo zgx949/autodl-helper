@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AutoDL Helper · 一键抢机
 // @namespace    autodl-scheduler.local
-// @version      1.2.2
+// @version      1.2.3
 // @description  在 AutoDL 实例行一键抢机、自动重试，直接查看进度；定时和间隔可在高级设置中调整。
 // @author       zgx949
 // @license      MIT
@@ -467,6 +467,161 @@ function createScheduler({
 }
 
 
+// Source: src/tabs.js
+// All tabs may manage tasks, but only the Web Locks owner executes requests.
+// Credentials and notification secrets never travel over the page channel.
+function createTabCoordinator({
+  makeScheduler,
+  getCredentials,
+  openConsole,
+  locks = navigator.locks,
+  createChannel = () => new BroadcastChannel('autodl-scheduler:commands:v1'),
+  makeId = () => crypto.randomUUID(),
+  setTimer = (fn, delay) => setTimeout(fn, delay),
+  clearTimer = timer => clearTimeout(timer),
+  timeoutMs = 8000
+}) {
+  const remoteCommands = new Set(['GET_STATE', 'START_JOB', 'STOP_JOB', 'DELETE_JOB', 'SET_PREFERENCES', 'CLEAR_LOGS']);
+  const unavailable = '未连接到任务管理标签页，请确认所有 AutoDL 标签页均已更新脚本并刷新；操作未自动重发，请确认任务状态后重试';
+  const pending = new Map();
+  const tabId = makeId();
+  const waiting = new AbortController();
+  let channel;
+  let scheduler;
+  let leader = false;
+  let canForward = false;
+  let destroyed = false;
+  let releaseLock;
+
+  function replaceScheduler(isLeader, reason) {
+    scheduler?.destroy();
+    leader = isLeader;
+    scheduler = makeScheduler(isLeader, reason);
+  }
+
+  async function receive({ data }) {
+    if (destroyed || !data || data.from === tabId) return;
+    if (data.kind === 'response' && data.to === tabId) {
+      const request = pending.get(data.id);
+      if (!request) return;
+      clearTimer(request.timer);
+      pending.delete(data.id);
+      request.resolve(data.result);
+      return;
+    }
+    if (!leader || data.kind !== 'request' || typeof data.id !== 'string') return;
+    const owner = scheduler;
+    let result;
+    try {
+      if (data.operation === 'sync') {
+        // Read auth in the executing tab, never trust auth supplied by a peer.
+        await owner.syncPage({ ...await getCredentials(), instances: data.payload?.instances, pageUrl: data.payload?.pageUrl });
+        result = { ok: true };
+      } else if (remoteCommands.has(data.operation)) {
+        result = await owner.command(data.operation, data.payload);
+        if (result.snapshot) result.snapshot.connectionMode = 'remote';
+      } else return;
+    } catch { result = { ok: false, error: '任务管理标签页未能完成操作，请确认状态后重试' }; }
+    if (!destroyed) channel.postMessage({ kind: 'response', from: tabId, to: data.from, id: data.id, result });
+  }
+
+  function hold(lock) {
+    if (destroyed || !lock) return;
+    const lifetime = new Promise(resolve => { releaseLock = resolve; });
+    // A new scheduler pauses saved active tasks on takeover, just as on reload.
+    replaceScheduler(true);
+    return lifetime;
+  }
+
+  const ready = (async () => {
+    if (!locks?.request) {
+      replaceScheduler(false, '浏览器未提供标签页互斥锁，为避免重复开机已停用任务，请更新 Chrome 后重试');
+      return;
+    }
+    try { channel = createChannel(); channel.onmessage = event => { void receive(event); }; }
+    catch { /* A sole tab can still execute without a cross-tab channel. */ }
+    try {
+      // Resolve initialization when the callback starts, not when its lock ends.
+      await new Promise((resolve, reject) => {
+        locks.request('autodl-scheduler:leader:v1', { ifAvailable: true }, lock => {
+          if (destroyed) { resolve(); return; }
+          if (!lock) replaceScheduler(false, unavailable);
+          const lifetime = hold(lock);
+          resolve();
+          return lifetime;
+        }).catch(reject);
+      });
+      canForward = Boolean(channel);
+      if (!leader && !destroyed) {
+        // Queue without stealing the lock or interrupting the owner's requests.
+        void locks.request('autodl-scheduler:leader:v1', { signal: waiting.signal }, hold).catch(() => {});
+      }
+    } catch {
+      if (!destroyed) replaceScheduler(false, '无法取得标签页互斥锁，请刷新页面后重试');
+    }
+  })();
+
+  function forward(operation, payload) {
+    if (!canForward) return Promise.resolve({ ok: false, error: unavailable });
+    const id = makeId();
+    return new Promise(resolve => {
+      const timer = setTimer(() => {
+        pending.delete(id);
+        resolve({ ok: false, error: unavailable });
+      }, timeoutMs);
+      pending.set(id, { resolve, timer });
+      try { channel.postMessage({ kind: 'request', from: tabId, id, operation, payload }); }
+      catch {
+        clearTimer(timer);
+        pending.delete(id);
+        resolve({ ok: false, error: unavailable });
+      }
+    });
+  }
+
+  async function command(type, payload = {}) {
+    await ready;
+    if (destroyed) return { ok: false, error: '脚本已停止，请刷新页面' };
+    if (type === 'OPEN_AUTODL') {
+      openConsole();
+      return command('GET_STATE');
+    }
+    if (leader) return scheduler.command(type, payload);
+    // SPT stays in the owner's private memory instead of being broadcast.
+    if (type === 'SET_PUSH') return { ok: false, error: '请在执行任务的标签页配置微信通知，通知密钥不会跨标签页传输' };
+    if (!remoteCommands.has(type)) return { ok: false, error: '不支持的操作' };
+    const response = await forward(type, payload);
+    if (type === 'GET_STATE' && !response.ok) return scheduler.command(type);
+    return response;
+  }
+
+  async function syncPage(payload) {
+    await ready;
+    if (destroyed) return;
+    if (leader) return scheduler.syncPage(payload);
+    // Strip auth and any unexpected fields before sending page observations.
+    const response = await forward('sync', { instances: payload.instances, pageUrl: payload.pageUrl });
+    if (!response.ok) throw new Error(response.error);
+  }
+
+  function destroy() {
+    if (destroyed) return;
+    destroyed = true;
+    waiting.abort();
+    scheduler?.destroy();
+    releaseLock?.();
+    for (const request of pending.values()) {
+      clearTimer(request.timer);
+      request.resolve({ ok: false, error: '脚本已停止，请刷新页面' });
+    }
+    pending.clear();
+    channel?.close();
+  }
+
+  return { command, syncPage, destroy };
+}
+
+
 // Source: src/panel.js
 
 function createPanel(container, scheduler, { initialUuid = '', onClose = () => {}, beforeStart = async () => {} } = {}) {
@@ -672,9 +827,9 @@ function createPanel(container, scheduler, { initialUuid = '', onClose = () => {
     const available = auth.available && (!auth.expiresAt || Number(auth.expiresAt) > Date.now());
     $('auth-dot').className = `dot${available && !state.readOnly ? ' ready' : ''}`;
     $('auth-status').textContent = state.readOnly ? '当前标签页只读' : available ? '已连接 AutoDL' : '请先登录 AutoDL';
-    $('auth-detail').textContent = state.readOnly ? state.blockedReason || '请回到管理任务的标签页' : available ? '点击“抢机”即可自动等待库存' : '登录后刷新实例页面即可';
+    $('auth-detail').textContent = state.readOnly ? state.blockedReason || '请回到管理任务的标签页' : available ? state.connectionMode === 'remote' ? '已连接任务管理标签页，可在本页抢机、停止或删除记录' : '点击“抢机”即可自动等待库存' : '登录后刷新实例页面即可';
     $('active-count').textContent = `${(state.jobs || []).filter(job => job.enabled).length} 个进行中`;
-    $('push-status').textContent = state.pushConfigured ? '已配置，仅当前页面有效' : '未配置';
+    $('push-status').textContent = state.connectionMode === 'remote' ? '请在执行任务的标签页配置' : state.pushConfigured ? '已配置，仅当前页面有效' : '未配置';
     for (const id of mutationButtons) $(id).disabled = Boolean(state.readOnly);
     if (!preferencesLoaded && !preferencesDirty) fillPreferences(state.preferences);
     renderJobs(Array.isArray(state.jobs) ? state.jobs : []);
@@ -1111,7 +1266,10 @@ function installPage(scheduler, panelMarkup, panelCss) {
         lastSnapshot = snapshot;
       }
       await refreshTasks();
-    } catch { /* Never place credentials or raw scheduler errors in the page or console. */ }
+    } catch {
+      // A failed peer sync must still display the read-only reason and history.
+      await refreshTasks();
+    }
     finally {
       syncBusy = false;
       if (syncAgain && !destroyed) {
@@ -1204,15 +1362,11 @@ async function bootstrap(panelMarkup, panelCss) {
     get: async () => GM_getValue(STORAGE_KEY, null),
     set: async value => { GM_setValue(STORAGE_KEY, value); }
   };
-  let installed = false;
   let stopped = false;
   let page = null;
   let scheduler = null;
-  let releaseLock;
-  function install(isLeader, reason) {
-    if (installed || stopped) return;
-    installed = true;
-    scheduler = createScheduler({
+  function makeScheduler(isLeader, reason) {
+    return createScheduler({
       storage, getCredentials: readPageCredentials, canRun: () => isLeader && !stopped,
       blockedReason: reason,
       openConsole: () => GM_openInTab(currentConsoleUrl(), { active: true, insert: true }),
@@ -1236,32 +1390,19 @@ async function bootstrap(panelMarkup, panelCss) {
         });
       })
     });
-    page = installPage(scheduler, panelMarkup, panelCss);
   }
   function stop() {
     if (stopped) return;
     stopped = true;
     if (typeof page === "function") page();
     scheduler?.destroy();
-    releaseLock?.();
   }
   window.addEventListener("pagehide", stop, { once: true });
   // Back/forward cache restores JS state without rerunning the userscript.
   window.addEventListener("pageshow", event => { if (event.persisted && stopped) location.reload(); });
-  if (!navigator.locks?.request) {
-    install(false, "浏览器未提供标签页互斥锁，为避免重复开机已停用任务，请更新 Chrome 后重试");
-    return;
-  }
-  try {
-    await navigator.locks.request("autodl-scheduler:leader:v1", { ifAvailable: true }, async lock => {
-      if (!lock) { install(false); return; }
-      const lifetime = new Promise(resolve => { releaseLock = resolve; });
-      install(true);
-      await lifetime;
-    });
-  } catch {
-    install(false, "无法取得标签页互斥锁，请刷新页面后重试");
-  }
+  scheduler = createTabCoordinator({ makeScheduler, getCredentials: readPageCredentials,
+    openConsole: () => GM_openInTab(currentConsoleUrl(), { active: true, insert: true }) });
+  page = installPage(scheduler, panelMarkup, panelCss);
 }
 
 void bootstrap("<main class=\"app\">\n  <header class=\"masthead\">\n    <div class=\"brand-icon\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"5\"/><path d=\"M8 8h8v8H8zM9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3\"/></svg></div>\n    <div><div class=\"eyebrow\">AUTODL ASSISTANT</div><h1>抢机任务</h1></div>\n    <button id=\"open-autodl\" class=\"button ghost compact\" type=\"button\">实例列表 ↗</button>\n    <button id=\"close-panel\" class=\"text-button panel-close\" type=\"button\" aria-label=\"关闭抢机面板\">×</button>\n  </header>\n\n  <section class=\"connection\" aria-label=\"登录状态\">\n    <span id=\"auth-dot\" class=\"dot\"></span>\n    <div class=\"connection-copy\"><strong id=\"auth-status\">正在连接…</strong><span id=\"auth-detail\">自动读取当前页面登录状态</span></div>\n    <span id=\"active-count\" class=\"pill\">0 个进行中</span>\n  </section>\n  <div id=\"feedback\" class=\"feedback\" role=\"status\" aria-live=\"polite\" hidden></div>\n\n  <section class=\"card jobs-section\">\n    <div class=\"section-heading\"><h2>抢机进度 <span id=\"jobs-count\" class=\"count\">0</span></h2><button id=\"refresh\" class=\"text-button\" type=\"button\">刷新</button></div>\n    <div id=\"jobs\" class=\"jobs\"><div class=\"empty-state\">还没有抢机任务<br><span>在实例旁点一下“抢机”，这里就会显示进度</span></div></div>\n  </section>\n\n  <section class=\"card instances-section\">\n    <div class=\"section-heading\"><h2>添加实例</h2><span class=\"muted small\">点一下，自动等待库存</span></div>\n    <div id=\"instances\" class=\"instances\"><p class=\"muted small\">正在读取页面中的实例…</p></div>\n  </section>\n\n  <details id=\"advanced-settings\" class=\"card settings\">\n    <summary>高级设置<span class=\"summary-hint\">通常无需修改</span></summary>\n    <div class=\"settings-body\">\n      <h3>新任务设置</h3>\n      <p class=\"muted small\">默认立即开始、持续等待库存。设置只影响之后添加的任务。</p>\n      <form id=\"preferences-form\">\n        <label for=\"start-at\">开始时间 <span class=\"label-hint\">留空立即开始 · 本地时间</span></label>\n        <input id=\"start-at\" type=\"datetime-local\" step=\"1\">\n        <div class=\"form-grid\">\n          <div><label for=\"interval\">重试间隔 <span class=\"label-hint\">秒 · 支持小数，0 = 不等待</span></label><input id=\"interval\" type=\"number\" min=\"0\" max=\"86400\" step=\"any\" value=\"60\" required></div>\n          <div><label for=\"max-attempts\">最多尝试 <span class=\"label-hint\">0 = 不限</span></label><input id=\"max-attempts\" type=\"number\" min=\"0\" max=\"100000\" step=\"1\" value=\"0\" required></div>\n        </div>\n        <div class=\"settings-actions\"><button id=\"save-preferences\" class=\"button secondary\" type=\"submit\">保存设置</button></div>\n      </form>\n      <div class=\"divider\"></div>\n      <h3>微信通知</h3>\n      <p class=\"muted small\">可选。开机请求受理后通过 WxPusher 通知，密钥仅在当前页面有效。</p>\n      <label for=\"push-token\">WxPusher SPT <span id=\"push-status\" class=\"label-hint\">未配置</span></label>\n      <input id=\"push-token\" type=\"password\" placeholder=\"SPT_…\" autocomplete=\"off\" spellcheck=\"false\">\n      <div class=\"settings-actions\"><button id=\"save-push\" class=\"button secondary\" type=\"button\">保存通知</button><button id=\"clear-push\" class=\"text-button\" type=\"button\">清除</button></div>\n      <div class=\"divider\"></div>\n      <h3>手动添加实例</h3>\n      <p class=\"muted small\">页面未识别到实例时使用。</p>\n      <form id=\"manual-form\" class=\"manual-form\">\n        <label class=\"sr-only\" for=\"instance-uuid\">实例 ID</label>\n        <input id=\"instance-uuid\" type=\"text\" placeholder=\"普通或 Pro 实例 ID\" autocomplete=\"off\" spellcheck=\"false\" maxlength=\"80\">\n        <button id=\"manual-start\" class=\"button secondary\" type=\"submit\">抢机</button>\n      </form>\n    </div>\n  </details>\n\n  <details class=\"card settings logs-section\">\n    <summary>运行记录<span class=\"summary-hint\">查看详情</span></summary>\n    <div class=\"settings-body\"><div class=\"log-toolbar\"><button id=\"clear-logs\" class=\"text-button\" type=\"button\">清空记录</button></div><div id=\"logs\" class=\"logs\"><p class=\"muted small\">暂无运行记录</p></div></div>\n  </details>\n  <footer>保持此标签页打开。电脑休眠或后台节流可能延迟重试。<br>“已受理”代表开机请求被接受，运行状态以控制台为准。</footer>\n</main>\n", ".panel-container {\n  color-scheme: light;\n  --ink: #18332f;\n  --muted: #798c87;\n  --line: #e4ede9;\n  --accent: #087f71;\n  --red: #be5248;\n  font: 13px Inter,-apple-system,BlinkMacSystemFont,\"Segoe UI\",\"PingFang SC\",\"Microsoft YaHei\",sans-serif;\n  margin: 0;\n  width: 100%;\n  min-width: 300px;\n  background: #f5f8f6;\n  color: var(--ink);\n}\n* {\n  box-sizing: border-box;\n}\nbutton,input {\n  font: inherit;\n}\nbutton {\n  cursor: pointer;\n}\nbutton:disabled {\n  cursor: default;\n  opacity: .5;\n}\ninput {\n  display: block;\n  width: 100%;\n  height: 38px;\n  padding: 0 11px;\n  color: var(--ink);\n  background: #fff;\n  border: 1px solid #dce6df;\n  border-radius: 8px;\n  outline: none;\n}\ninput:focus {\n  border-color: #44a99a;\n  box-shadow: 0 0 0 3px #087f7110;\n}\ninput::placeholder {\n  color: #a0ada7;\n}\ninput[type=datetime-local] {\n  padding-right: 9px;\n}\nlabel {\n  display: block;\n  font-size: 11px;\n  font-weight: 600;\n  margin: 13px 0 7px;\n}\nsvg {\n  display: block;\n  width: 24px;\n  height: 24px;\n  fill: none;\n  stroke: currentColor;\n  stroke-width: 1.7;\n  stroke-linecap: round;\n  stroke-linejoin: round;\n}\nh1,h2,h3,p {\n  margin: 0;\n}\nh1 {\n  font-size: 21px;\n  font-weight: 730;\n  letter-spacing: -.5px;\n  line-height: 1.3;\n}\nh2 {\n  font-size: 14px;\n  font-weight: 700;\n}\nh3 {\n  font-size: 12px;\n  margin-bottom: 7px;\n}\nbutton:focus-visible,summary:focus-visible {\n  outline: 2px solid #44a99a;\n  outline-offset: 3px;\n}\n.app {\n  max-width: 600px;\n  margin: auto;\n  padding: 20px 18px;\n}\n.masthead {\n  display: flex;\n  gap: 10px;\n  align-items: center;\n  margin-bottom: 18px;\n}\n.brand-icon {\n  display: grid;\n  place-items: center;\n  background: var(--accent);\n  color: white;\n  width: 40px;\n  height: 40px;\n  border-radius: 12px;\n  box-shadow: 0 4px 8px #087f7118;\n}\n.eyebrow {\n  font-size: 8px;\n  letter-spacing: 1.4px;\n  font-weight: 700;\n  color: var(--accent);\n  margin-bottom: 3px;\n}\n.masthead>.button {\n  margin-left: auto;\n}\n.button {\n  border: 0;\n  border-radius: 8px;\n  min-height: 33px;\n  padding: 8px 13px;\n  font-weight: 600;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  gap: 7px;\n  transition: background .15s;\n}\n.button.primary {\n  background: var(--accent);\n  color: white;\n  box-shadow: 0 2px 5px #087f7115;\n}\n.button.primary:hover {\n  background: #066e61;\n}\n.button.secondary {\n  background: #e9f4ef;\n  color: #087565;\n}\n.button.ghost {\n  color: #698078;\n  background: transparent;\n}\n.button.ghost:hover {\n  background: #e8eeea;\n}\n.button.compact {\n  font-size: 10px;\n  padding: 7px 0 7px 8px;\n}\n.text-button {\n  background: none;\n  border: 0;\n  padding: 4px;\n  color: #7b9289;\n  font-size: 10px;\n  white-space: nowrap;\n}\n.text-button:hover {\n  color: var(--accent);\n}\n.panel-close {\n  font-size: 21px;\n  width: 22px;\n  line-height: 24px;\n  padding: 0;\n  flex: none;\n}\n.danger-text,.text-button.danger-text:hover {\n  color: var(--red);\n}\n.accent-text {\n  color: var(--accent);\n}\n.connection {\n  display: flex;\n  align-items: center;\n  gap: 9px;\n  padding: 11px 12px;\n  background: #edf3ef;\n  border: 1px solid #e0e9e2;\n  border-radius: 10px;\n  margin-bottom: 15px;\n}\n.dot {\n  width: 7px;\n  height: 7px;\n  border-radius: 50%;\n  background: #aab7af;\n  flex: none;\n}\n.dot.ready {\n  background: #14977e;\n  box-shadow: 0 0 0 4px #14977e12;\n}\n.connection-copy {\n  min-width: 0;\n  flex: 1;\n}\n.connection-copy strong {\n  display: block;\n  font-size: 11px;\n  font-weight: 650;\n}\n.connection-copy>span {\n  font-size: 10px;\n  color: var(--muted);\n  display: block;\n  margin-top: 4px;\n  line-height: 1.45;\n}\n.pill {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--accent);\n  padding: 5px 7px;\n  border-radius: 6px;\n  background: #fff;\n  white-space: nowrap;\n}\n.card {\n  background: white;\n  border: 1px solid var(--line);\n  border-radius: 12px;\n  margin-bottom: 12px;\n  padding: 16px;\n  box-shadow: 0 2px 3px #152d3802;\n}\n.section-heading {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  margin-bottom: 12px;\n}\n.muted {\n  color: var(--muted);\n}\n.small {\n  font-size: 10px;\n  line-height: 1.7;\n}\n.count {\n  font-size: 10px;\n  color: #8b9b92;\n  background: #f0f4f1;\n  padding: 2px 5px;\n  border-radius: 4px;\n  margin-left: 4px;\n  vertical-align: middle;\n}\n.empty-state {\n  text-align: center;\n  padding: 20px 4px;\n  color: #738b7f;\n  font-size: 12px;\n  line-height: 1.9;\n}\n.empty-state span {\n  font-size: 10px;\n  color: #9aa99f;\n}\n.job {\n  border: 1px solid var(--line);\n  border-radius: 10px;\n  padding: 13px;\n  margin-top: 10px;\n  scroll-margin-top: 14px;\n  transition: border-color .2s;\n}\n.job:first-child {\n  margin-top: 0;\n}\n.job.is-active {\n  background: linear-gradient(135deg,#fcfffd,#f6faf7);\n  border-color: #d6e9dd;\n}\n.job.selected {\n  border-color: #81c3a5;\n  box-shadow: 0 0 0 2px #087f7108;\n}\n.job-header {\n  display: flex;\n  justify-content: space-between;\n  gap: 10px;\n  align-items: flex-start;\n}\n.job-heading {\n  min-width: 0;\n}\n.job-title {\n  font-size: 13px;\n  font-weight: 680;\n  overflow-wrap: anywhere;\n  line-height: 1.5;\n}\n.job-status {\n  font-size: 10px;\n  padding: 3px 6px;\n  border-radius: 5px;\n  white-space: nowrap;\n  background: #f0f4f1;\n  color: #7b8d81;\n}\n.job-status.active {\n  background: #e5f4ea;\n  color: #14805f;\n}\n.job-status.success {\n  background: #e6f6ec;\n  color: #22824f;\n}\n.job-status.error {\n  background: #fff0eb;\n  color: #bb6048;\n}\n.job-details {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  flex-wrap: wrap;\n  gap: 7px;\n  font-size: 10px;\n  color: #7f9588;\n  margin-top: 12px;\n}\n.attempts {\n  font-weight: 600;\n  color: #4e7060;\n}\n.countdown {\n  font-variant-numeric: tabular-nums;\n  color: var(--accent);\n}\n.activity-track {\n  height: 3px;\n  background: #e3eee5;\n  overflow: hidden;\n  border-radius: 3px;\n  margin: 11px 0 0;\n  position: relative;\n}\n.activity-track:after {\n  content: \"\";\n  position: absolute;\n  inset: 0 auto 0 0;\n  width: 28%;\n  border-radius: 3px;\n  background: #68b68c;\n  animation: waiting 2.5s ease-in-out infinite;\n}\n.job-message {\n  font-size: 10px;\n  line-height: 1.65;\n  color: #7f9286;\n  margin-top: 9px;\n  overflow-wrap: anywhere;\n  white-space: pre-wrap;\n}\n.job-actions {\n  display: flex;\n  align-items: center;\n  justify-content: flex-end;\n  gap: 10px;\n  margin-top: 9px;\n}\n.job-uuid {\n  font-size: 9px;\n  color: #9daaa2;\n  font-family: ui-monospace,SFMono-Regular,Menlo,monospace;\n  overflow-wrap: anywhere;\n  margin-right: auto;\n  min-width: 0;\n}\n.instance-item {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 11px 0;\n  border-bottom: 1px solid #edf2ed;\n}\n.instance-item:last-child {\n  border-bottom: 0;\n  padding-bottom: 1px;\n}\n.instance-item:first-child {\n  padding-top: 1px;\n}\n.instance-copy {\n  min-width: 0;\n  flex: 1;\n}\n.instance-title {\n  display: block;\n  font-size: 12px;\n  font-weight: 600;\n  line-height: 1.6;\n  overflow-wrap: anywhere;\n}\n.instance-meta {\n  display: block;\n  font-size: 10px;\n  color: #93a397;\n  line-height: 1.6;\n}\n.quick-start {\n  min-width: 56px;\n  font-size: 11px;\n  padding: 7px 13px;\n  flex: none;\n}\n.settings {\n  padding: 0;\n}\n.settings>summary {\n  cursor: pointer;\n  font-size: 12px;\n  font-weight: 650;\n  padding: 15px 16px;\n  list-style: none;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n.settings>summary::-webkit-details-marker {\n  display: none;\n}\n.settings>summary:before {\n  content: '›';\n  font-size: 16px;\n  line-height: 1;\n  color: #8fa395;\n  transition: transform .15s;\n}\n.settings[open]>summary:before {\n  transform: rotate(90deg);\n}\n.summary-hint {\n  font-size: 10px;\n  color: #9aa99f;\n  font-weight: 400;\n  margin-left: auto;\n}\n.settings-body {\n  padding: 0 16px 16px;\n}\n.settings-actions {\n  display: flex;\n  align-items: center;\n  gap: 11px;\n  margin-top: 10px;\n}\n.settings-actions .button {\n  font-size: 11px;\n  min-height: 31px;\n  padding: 6px 11px;\n}\n.divider {\n  height: 1px;\n  background: var(--line);\n  margin: 18px 0;\n}\n.label-hint {\n  color: #92a095;\n  font-size: 10px;\n  font-weight: 400;\n  margin-left: 4px;\n}\n.form-grid {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  gap: 13px;\n}\n.manual-form {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin-top: 10px;\n}\n.manual-form input {\n  min-width: 0;\n  flex: 1;\n}\n.manual-form .button {\n  height: 38px;\n  font-size: 11px;\n}\n.sr-only {\n  position: absolute;\n  width: 1px;\n  height: 1px;\n  overflow: hidden;\n  clip: rect(0,0,0,0);\n  white-space: nowrap;\n}\n.log-toolbar {\n  display: flex;\n  justify-content: flex-end;\n  margin-bottom: 4px;\n}\n.logs {\n  max-height: 214px;\n  overflow-y: auto;\n  scrollbar-width: thin;\n}\n.log {\n  display: grid;\n  grid-template-columns: 44px 1fr;\n  gap: 9px;\n  padding: 7px 0;\n  border-bottom: 1px solid #f0f4f0;\n  line-height: 1.65;\n}\n.log:last-child {\n  border-bottom: 0;\n}\n.log-time {\n  font-size: 9px;\n  color: #9aa89d;\n  white-space: nowrap;\n  font-family: ui-monospace,monospace;\n  padding-top: 1px;\n}\n.log-message {\n  font-size: 10px;\n  overflow-wrap: anywhere;\n  white-space: pre-wrap;\n  color: #7a8e80;\n}\n.log.warn .log-message {\n  color: #af8039;\n}\n.log.error .log-message {\n  color: #b9534c;\n}\n.log.success .log-message {\n  color: #22865a;\n}\n.log-instance {\n  font-size: 9px;\n  color: #a1ada4;\n  display: block;\n  line-height: 1.5;\n}\n.feedback {\n  padding: 10px 12px;\n  border: 1px solid #cfe9dd;\n  border-radius: 8px;\n  background: #ecf8f0;\n  color: #29805d;\n  font-size: 11px;\n  line-height: 1.6;\n  margin-bottom: 13px;\n  overflow-wrap: anywhere;\n}\n.feedback.error {\n  border-color: #f2d8d2;\n  background: #fff2ef;\n  color: #ba5644;\n}\nfooter {\n  font-size: 9px;\n  text-align: center;\n  color: #9ca99e;\n  line-height: 1.9;\n  padding: 3px 0 4px;\n}\n[hidden] {\n  display: none!important;\n}\n@keyframes waiting {\n  0% {\n    transform: translateX(-110%);\n  }\n  50% {\n    transform: translateX(250%);\n  }\n  100% {\n    transform: translateX(390%);\n  }\n}\n@media(max-width:365px) {\n  .app {\n    padding: 15px 12px;\n  }\n  .card {\n    padding: 13px;\n  }\n  .settings {\n    padding: 0;\n  }\n  .section-heading .muted {\n    font-size: 9px;\n  }\n  .masthead .compact {\n    font-size: 9px;\n  }\n  .job-details {\n    font-size: 9px;\n  }\n  .job-uuid {\n    font-size: 8px;\n  }\n}\n@media(prefers-reduced-motion:reduce) {\n  *,*:after {\n    transition: none!important;\n    animation: none!important;\n  }\n}\n");

@@ -368,7 +368,10 @@ export function installPage(scheduler, panelMarkup, panelCss) {
         lastSnapshot = snapshot;
       }
       await refreshTasks();
-    } catch { /* Never place credentials or raw scheduler errors in the page or console. */ }
+    } catch {
+      // A failed peer sync must still display the read-only reason and history.
+      await refreshTasks();
+    }
     finally {
       syncBusy = false;
       if (syncAgain && !destroyed) {

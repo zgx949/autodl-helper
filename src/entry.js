@@ -1,6 +1,7 @@
 import { createScheduler } from "./scheduler.js";
 import { installPage } from "./page.js";
 import { instanceType, instanceConsoleUrl } from "./core.js";
+import { createTabCoordinator } from "./tabs.js";
 
 export function requestInstancePowerOn({ uuid, token, appVersion, signal }) {
   const type = instanceType(uuid);
@@ -30,15 +31,11 @@ export async function bootstrap(panelMarkup, panelCss) {
     get: async () => GM_getValue(STORAGE_KEY, null),
     set: async value => { GM_setValue(STORAGE_KEY, value); }
   };
-  let installed = false;
   let stopped = false;
   let page = null;
   let scheduler = null;
-  let releaseLock;
-  function install(isLeader, reason) {
-    if (installed || stopped) return;
-    installed = true;
-    scheduler = createScheduler({
+  function makeScheduler(isLeader, reason) {
+    return createScheduler({
       storage, getCredentials: readPageCredentials, canRun: () => isLeader && !stopped,
       blockedReason: reason,
       openConsole: () => GM_openInTab(currentConsoleUrl(), { active: true, insert: true }),
@@ -62,30 +59,17 @@ export async function bootstrap(panelMarkup, panelCss) {
         });
       })
     });
-    page = installPage(scheduler, panelMarkup, panelCss);
   }
   function stop() {
     if (stopped) return;
     stopped = true;
     if (typeof page === "function") page();
     scheduler?.destroy();
-    releaseLock?.();
   }
   window.addEventListener("pagehide", stop, { once: true });
   // Back/forward cache restores JS state without rerunning the userscript.
   window.addEventListener("pageshow", event => { if (event.persisted && stopped) location.reload(); });
-  if (!navigator.locks?.request) {
-    install(false, "浏览器未提供标签页互斥锁，为避免重复开机已停用任务，请更新 Chrome 后重试");
-    return;
-  }
-  try {
-    await navigator.locks.request("autodl-scheduler:leader:v1", { ifAvailable: true }, async lock => {
-      if (!lock) { install(false); return; }
-      const lifetime = new Promise(resolve => { releaseLock = resolve; });
-      install(true);
-      await lifetime;
-    });
-  } catch {
-    install(false, "无法取得标签页互斥锁，请刷新页面后重试");
-  }
+  scheduler = createTabCoordinator({ makeScheduler, getCredentials: readPageCredentials,
+    openConsole: () => GM_openInTab(currentConsoleUrl(), { active: true, insert: true }) });
+  page = installPage(scheduler, panelMarkup, panelCss);
 }

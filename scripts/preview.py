@@ -96,8 +96,8 @@ window.fetch = async (input, init = {}) => {
 window.XMLHttpRequest = class { constructor() { throw new Error('离线演示禁止 XMLHttpRequest'); } };
 history.replaceState(null, '', '/console/instance/list?offline-preview=1');
 const [panelMarkup, panelCss] = await Promise.all([
-  fetch('/src/panel.html?v=1.2.2', { cache: 'no-store' }).then(response => response.text()),
-  fetch('/src/panel.css?v=1.2.2', { cache: 'no-store' }).then(response => response.text()),
+  fetch('/src/panel.html?v=1.2.3', { cache: 'no-store' }).then(response => response.text()),
+  fetch('/src/panel.css?v=1.2.3', { cache: 'no-store' }).then(response => response.text()),
 ]);
 const expected = [
   { uuid: 'pro-demo0001', name: 'Demo GPU A', status: '已关机', canPowerOn: null },
